@@ -9,8 +9,8 @@ folders of your own, and downloads the releases you pick.
 ## Features
 
 - **Your own folder tree.** Create folders and subfolders in Settings (for example
-  *Emulators*, *Games › Nintendo › NES*) and file each repository under one. Selecting a
-  folder lists its repositories and those of every folder below it.
+  *Games › PC*) and file each repository under one. Selecting a folder lists its
+  repositories and those of every folder below it.
 - **Latest / Current at a glance.** Refresh checks every repository (or only the selected
   folder) and shows the newest version next to the one you have. Repositories that publish
   no files are marked **SOURCE** and get their source archive instead; a repository that
