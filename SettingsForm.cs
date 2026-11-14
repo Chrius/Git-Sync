@@ -33,6 +33,7 @@ internal sealed class SettingsForm : Form
 
         AddTab("Filters", new FiltersTab());
         AddTab("Sites", new SitesTab());
+        AddTab("Automation", new AutomationTab());
 
         Controls.Add(_tabs);
     }

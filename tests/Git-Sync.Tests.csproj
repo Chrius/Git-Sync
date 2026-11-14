@@ -47,6 +47,7 @@
     <Compile Include="..\PreferenceStore.cs" />
     <Compile Include="..\RateLimits.cs" />
     <Compile Include="..\SiteDetection.cs" />
+    <Compile Include="..\AutoCheck.cs" />
     <Compile Include="..\Downloader.cs" />
   </ItemGroup>
 

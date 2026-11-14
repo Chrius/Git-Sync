@@ -38,6 +38,7 @@ internal static class Tests
         TestSorting();
         TestRateLimits();
         TestSiteDetection();
+        TestAutoCheck();
 
         if (args.Contains("--online"))
         {
@@ -1116,6 +1117,46 @@ internal static class Tests
         Check("unused detected site goes away", false, SiteStore.List().Any(s => s.Id == added.Id));
         Check("built-in sites always stay", 3,
             SiteStore.List().Count(s => SiteStore.BuiltInHosts.Contains(s.Host, StringComparer.OrdinalIgnoreCase)));
+    }
+
+    private static void TestAutoCheck()
+    {
+        Section("Automatic check");
+
+        Check("choices in the drop down", "30 minutes|1 hour|3 hours|6 hours|12 hours",
+            string.Join("|", AutoCheck.Intervals.Select(i => i.Text)));
+        Check("saved period read back", 180, AutoCheck.ParseMinutes("180"));
+        Check("period that is not a choice", AutoCheck.DefaultMinutes, AutoCheck.ParseMinutes("45"));
+        Check("nothing saved", AutoCheck.DefaultMinutes, AutoCheck.ParseMinutes(null));
+
+        var now = new DateTimeOffset(2026, 11, 14, 18, 0, 0, TimeSpan.Zero);
+        Check("never checked: due right away", true, AutoCheck.IsDue(null, 30, now));
+        Check("29 minutes after a full check: not yet", false, AutoCheck.IsDue(now.AddMinutes(-29), 30, now));
+        Check("30 minutes after: due", true, AutoCheck.IsDue(now.AddMinutes(-30), 30, now));
+        Check("11 hours into 12: not yet", false, AutoCheck.IsDue(now.AddHours(-11), 720, now));
+        Check("overdue after the app was closed", true, AutoCheck.IsDue(now.AddDays(-2), 360, now));
+        Check("next check counts from the last full check", now.AddHours(3), AutoCheck.NextCheck(now, 180, now.AddMinutes(10)));
+
+        // ----- saved settings -----
+
+        AutoCheckSettings fresh = AutoCheck.Load();
+        Check("off by default", false, fresh.Enabled);
+        Check("1 hour by default", 60, fresh.Minutes);
+        Check("never checked by default", null, fresh.LastFullCheck);
+
+        AutoCheck.SetEnabled(true);
+        AutoCheck.SetMinutes(360);
+        AutoCheck.SetLastFullCheck(now);
+        AutoCheckSettings saved = AutoCheck.Load();
+        Check("switched on", true, saved.Enabled);
+        Check("period saved", 360, saved.Minutes);
+        Check("last full check saved", now, saved.LastFullCheck);
+
+        AutoCheck.SetMinutes(999);
+        Check("a period that is not a choice is not saved as such", AutoCheck.DefaultMinutes, AutoCheck.Load().Minutes);
+
+        AutoCheck.SetEnabled(false);
+        Check("switched off again", false, AutoCheck.Load().Enabled);
     }
 
     // ---------- live APIs ----------

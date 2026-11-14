@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.Windows.Forms;
 
 namespace GitSync;
@@ -44,6 +45,15 @@ internal sealed class MainForm : Form
     private VersionMenu? _menu;
     private ContextMenuStrip? _refreshMenu;
     private bool _refreshing;
+
+    /// <summary>
+    /// Looks every 30 seconds whether the automatic check is due. A short
+    /// tick instead of one long timer: the period counts from the last full
+    /// check, which a manual Refresh can move at any moment.
+    /// </summary>
+    private readonly System.Windows.Forms.Timer _autoTimer = new() { Interval = 30_000 };
+
+    private AutoCheckSettings _auto = new(false, AutoCheck.DefaultMinutes, null);
 
     /// <summary>True while a dropped or pasted link's server is being checked.</summary>
     private bool _addingLink;
@@ -206,7 +216,36 @@ internal sealed class MainForm : Form
         _sort.SelectedIndex = Array.FindIndex(Orders, o => o.Order == _order);
         _loadingTree = false;
 
+        _auto = AutoCheck.Load();
         ReloadAll(keepScroll: false);
+
+        _autoTimer.Tick += (_, _) => AutoTick();
+        _autoTimer.Start();
+    }
+
+    /// <summary>A check that fell due while the app was closed runs as soon as the window is up.</summary>
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        AutoTick();
+    }
+
+    /// <summary>
+    /// Starts the automatic check when it is on and due. Not while a dialog or
+    /// message box is open (the window is disabled then, so CanFocus is
+    /// false): that check waits for the next tick after it closes.
+    /// </summary>
+    private void AutoTick()
+    {
+        if (!_auto.Enabled || _refreshing || IsDisposed || !CanFocus)
+        {
+            return;
+        }
+
+        if (AutoCheck.IsDue(_auto.LastFullCheck, _auto.Minutes, DateTimeOffset.UtcNow))
+        {
+            RefreshRepos(RepoStore.List(), everything: true);
+        }
     }
 
     // ---------- loading ----------
@@ -360,6 +399,17 @@ internal sealed class MainForm : Form
             text += failed == 1 ? " · 1 could not be checked" : $" · {failed} could not be checked";
         }
 
+        if (_auto.Enabled)
+        {
+            DateTimeOffset next = AutoCheck.NextCheck(_auto.LastFullCheck, _auto.Minutes, DateTimeOffset.Now).ToLocalTime();
+
+            text += next <= DateTimeOffset.Now
+                ? " · checking for updates shortly"
+                : next.Date == DateTime.Today
+                    ? $" · next check at {next.ToString("HH:mm", CultureInfo.InvariantCulture)}"
+                    : $" · next check tomorrow at {next.ToString("HH:mm", CultureInfo.InvariantCulture)}";
+        }
+
         SetStatus(text, Theme.DimText);
     }
 
@@ -387,7 +437,7 @@ internal sealed class MainForm : Form
 
         if (FilterTree.FolderOf(_tree.SelectedNode) is not { } folder)
         {
-            RefreshRepos(all);
+            RefreshRepos(all, everything: true);
             return;
         }
 
@@ -403,12 +453,12 @@ internal sealed class MainForm : Form
         };
 
         _refreshMenu.Items.Add(new ToolStripMenuItem(
-            $"Refresh everything ({Count(all.Count)})", null, (_, _) => RefreshRepos(all)));
+            $"Refresh everything ({Count(all.Count)})", null, (_, _) => RefreshRepos(all, everything: true)));
 
         // "&&": a single "&" in a folder name would become a shortcut underline.
         _refreshMenu.Items.Add(new ToolStripMenuItem(
             $"Refresh only \"{folder.Name.Replace("&", "&&", StringComparison.Ordinal)}\" ({Count(inFolder.Count)})",
-            null, (_, _) => RefreshRepos(inFolder))
+            null, (_, _) => RefreshRepos(inFolder, everything: false))
         {
             Enabled = inFolder.Count > 0
         });
@@ -419,7 +469,11 @@ internal sealed class MainForm : Form
         static string Count(int n) => n == 1 ? "1 repository" : $"{n} repositories";
     }
 
-    private async void RefreshRepos(List<Repo> repos)
+    /// <param name="everything">
+    /// Every repository is being checked. Only then does the automatic
+    /// check's period start over: a folder-only refresh leaves the rest unchecked.
+    /// </param>
+    private async void RefreshRepos(List<Repo> repos, bool everything)
     {
         if (_refreshing)
         {
@@ -463,6 +517,13 @@ internal sealed class MainForm : Form
 
         _refreshing = false;
         _refresh.Enabled = true;
+
+        if (everything)
+        {
+            AutoCheck.SetLastFullCheck(DateTimeOffset.UtcNow);
+            _auto = AutoCheck.Load();
+        }
+
         UpdateSummary();
         Resort();
     }
@@ -987,7 +1048,11 @@ internal sealed class MainForm : Form
             settings.ShowDialog(this);
         }
 
+        _auto = AutoCheck.Load();
         ReloadAll(keepScroll: true);
+
+        // Switched on with a period that has already run out: check now, not in 30 seconds.
+        AutoTick();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -1013,6 +1078,8 @@ internal sealed class MainForm : Form
     {
         if (disposing)
         {
+            _autoTimer.Stop();
+            _autoTimer.Dispose();
             _menu?.Dispose();
             _refreshMenu?.Dispose();
             _tips.Dispose();
