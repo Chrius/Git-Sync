@@ -4,7 +4,7 @@ A small Windows app that keeps track of new releases on GitHub, GitLab, Codeberg
 self-hosted Forgejo / Gitea / GitLab servers, sorts the repositories you follow into
 folders of your own, and downloads the releases you pick.
 
-![Git-Sync main window](docs/main-window.png)
+![Git-Sync main window](docs/screenshot.png)
 
 ## Features
 
