@@ -1,0 +1,59 @@
+<Project>
+
+  <!--
+    Build settings for Git-Sync and its test bench.
+
+    They are here, beside the project, so the repository builds on its own
+    after a clone. MSBuild uses the nearest Directory.Build.props it finds
+    walking up from a project and stops there, so with this file present no
+    other one above this folder is read.
+
+    Publish (a single self-contained Git-Sync.exe):
+      dotnet publish Git-Sync.csproj -c Release -o <output folder>
+
+    The output folder must not be this folder or one above it: with the source
+    inside the publish output, the compiler fails with "CS5001: Program does
+    not contain a static 'Main' method", an error that has nothing to do with Main.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!--
+      Application.SetColorMode, which gives the Windows controls their native
+      dark mode, is still marked experimental and raises WFO5001.
+    -->
+    <NoWarn>$(NoWarn);WFO5001</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <UseWindowsForms>true</UseWindowsForms>
+
+    <!-- Without this the window is blurry on screens scaled above 100%. -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!--
+      One self-contained executable: runs on any 64-bit Windows, even without
+      .NET installed, and the app is delivered by copying a single file.
+    -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+    <!-- Much smaller file, in exchange for a slower first start. -->
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+
+    <!-- Leaves out the framework's translations: the app is in English. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!-- No .pdb beside the executable. -->
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+</Project>

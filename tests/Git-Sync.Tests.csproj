@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Test bench for the logic that cannot be exercised by clicking: address
+    parsing, paths and name cleaning, release JSON of each API, version rules,
+    file replacement and the database.
+
+    Compiles the SAME source files as the app, without copies. Only the
+    classes without UI come in; the screens stay out.
+
+    It lives in the "tests" folder inside the app's own folder, so the source
+    and its tests are one repository; the app's project leaves this folder out.
+
+    Run before every delivery, from inside the tests folder:
+      dotnet run
+      dotnet run with the argument online after two hyphens, to also hit the live APIs
+
+    (An XML comment cannot hold two hyphens in a row, so the command line
+     cannot be written out literally here.)
+  -->
+
+  <PropertyGroup>
+    <!-- Overrides Directory.Build.props, which is made for desktop apps. -->
+    <OutputType>Exe</OutputType>
+    <!-- Off, so a logic file that starts depending on the screens fails to build here. -->
+    <UseWindowsForms>false</UseWindowsForms>
+    <PublishSingleFile>false</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+
+    <AssemblyName>Git-Sync.Tests</AssemblyName>
+    <RootNamespace>GitSync</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\AppPaths.cs" />
+    <Compile Include="..\Models.cs" />
+    <Compile Include="..\Database.cs" />
+    <Compile Include="..\SiteStore.cs" />
+    <Compile Include="..\FilterStore.cs" />
+    <Compile Include="..\RepoStore.cs" />
+    <Compile Include="..\RepoAddress.cs" />
+    <Compile Include="..\DownloadPaths.cs" />
+    <Compile Include="..\ReleaseParser.cs" />
+    <Compile Include="..\ApiClient.cs" />
+    <Compile Include="..\VersionState.cs" />
+    <Compile Include="..\RepoOrder.cs" />
+    <Compile Include="..\PreferenceStore.cs" />
+    <Compile Include="..\RateLimits.cs" />
+    <Compile Include="..\SiteDetection.cs" />
+    <Compile Include="..\Downloader.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
+  </ItemGroup>
+
+</Project>

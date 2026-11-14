@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- The assembly keeps the hyphen (Git-Sync.exe); a namespace cannot have one. -->
+    <RootNamespace>GitSync</RootNamespace>
+    <AssemblyName>Git-Sync</AssemblyName>
+    <Product>Git-Sync</Product>
+    <AssemblyTitle>Git-Sync</AssemblyTitle>
+    <Version>1.0.0</Version>
+
+    <!-- The window reads its icon from the exe itself, so changing this file and
+         rebuilding updates both places at once. -->
+    <ApplicationIcon>Git-Sync.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Brings SQLitePCLRaw.bundle_e_sqlite3 along, the native engine DLL. With
+      IncludeNativeLibrariesForSelfExtract (from Directory.Build.props) it goes
+      inside the .exe, so the delivery stays a single copyable file.
+    -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+
+    <!--
+      Pins SQLitePCLRaw above what Microsoft.Data.Sqlite asks for: the 2.1.11
+      that comes transitively carries a high-severity flaw in the native engine
+      (NU1903 / GHSA-2m69-gcr7-jv3q).
+    -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The test bench lives in "tests" inside this folder, as its own project.
+      Without this, the SDK's default globbing would compile Tests.cs (and the
+      files generated in tests\obj) into the app as well.
+    -->
+    <Compile Remove="tests\**" />
+    <EmbeddedResource Remove="tests\**" />
+    <None Remove="tests\**" />
+  </ItemGroup>
+
+</Project>

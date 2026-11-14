@@ -1,0 +1,118 @@
+namespace GitSync;
+
+/// <summary>Which REST API a site speaks. Self-hosted servers use the type of their software.</summary>
+internal enum ApiType
+{
+    GitHub,
+    GitLab,
+
+    /// <summary>Gitea and Forgejo (Codeberg) share the same API.</summary>
+    Gitea
+}
+
+/// <summary>What a version actually is, which decides how it is downloaded and labeled.</summary>
+internal enum VersionKind
+{
+    /// <summary>A release with uploaded files.</summary>
+    Release = 0,
+
+    /// <summary>A release without uploaded files: only its source archive can be downloaded.</summary>
+    ReleaseSource = 1,
+
+    /// <summary>The head commit of the default branch, for repos that have no releases at all.</summary>
+    Commit = 2
+}
+
+internal sealed class Site
+{
+    public long Id { get; set; }
+
+    /// <summary>Host without scheme ("github.com"), or with "http://" for a server without TLS.</summary>
+    public string Host { get; set; } = string.Empty;
+
+    public ApiType Type { get; set; }
+
+    public string Token { get; set; } = string.Empty;
+
+    public override string ToString() => Host;
+}
+
+internal sealed class FilterFolder
+{
+    public long Id { get; set; }
+    public long? ParentId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public int SortOrder { get; set; }
+    public bool Expanded { get; set; } = true;
+}
+
+/// <summary>A version as the database remembers it: enough to show it and to fetch it again.</summary>
+internal sealed record VersionRef(string Tag, DateTimeOffset? Date, VersionKind Kind)
+{
+    public bool IsSource => Kind != VersionKind.Release;
+
+    /// <summary>
+    /// Commit ids are stored whole (40 characters) because the source archive
+    /// endpoints are not guaranteed to accept a short one; seven are enough on
+    /// screen, as git itself does.
+    /// </summary>
+    public string DisplayTag => Kind == VersionKind.Commit && Tag.Length > 7 ? Tag[..7] : Tag;
+}
+
+internal sealed class Repo
+{
+    public long Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public long SiteId { get; set; }
+
+    /// <summary>"owner/repo", or "group/subgroup/project" on GitLab.</summary>
+    public string Path { get; set; } = string.Empty;
+
+    /// <summary>Folder name inside Apps\&lt;filter path&gt;.</summary>
+    public string Folder { get; set; } = string.Empty;
+
+    public long? FilterId { get; set; }
+
+    /// <summary>"Keep previous versions": a new download never deletes the files of earlier ones.</summary>
+    public bool KeepPrevious { get; set; }
+
+    public VersionRef? Latest { get; set; }
+    public VersionRef? Current { get; set; }
+
+    /// <summary>Version pinned by the user on right-click. Null means "follow Latest".</summary>
+    public VersionRef? Selected { get; set; }
+
+    /// <summary>Paths, relative to the exe, of the files saved for Current.</summary>
+    public List<string> CurrentFiles { get; set; } = [];
+
+    /// <summary>Why the last check failed; empty when it worked.</summary>
+    public string Error { get; set; } = string.Empty;
+
+    public DateTimeOffset? CheckedAt { get; set; }
+
+    public string ShortName => RepoAddress.LastSegment(Path);
+}
+
+internal sealed class Release
+{
+    public string Tag { get; init; } = string.Empty;
+    public string Title { get; init; } = string.Empty;
+    public DateTimeOffset? Date { get; init; }
+    public bool Prerelease { get; init; }
+    public bool Draft { get; init; }
+    public VersionKind Kind { get; init; }
+    public string PageUrl { get; init; } = string.Empty;
+
+    /// <summary>Only for <see cref="VersionKind.Commit"/>: the branch the commit is the head of.</summary>
+    public string Branch { get; init; } = string.Empty;
+
+    public List<ReleaseFile> Files { get; init; } = [];
+
+    public VersionRef ToVersion() => new(Tag, Date, Kind);
+}
+
+/// <param name="Name">File name as the server reports it; never trusted as a path.</param>
+/// <param name="Size">Bytes, or -1 when the API does not say.</param>
+/// <param name="Url">Public download address.</param>
+/// <param name="ApiUrl">GitHub only: the API address of the asset, which also works for private repos.</param>
+internal sealed record ReleaseFile(string Name, long Size, string Url, string? ApiUrl = null);
