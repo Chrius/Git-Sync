@@ -11,6 +11,8 @@ folders of your own, and downloads the releases you pick.
 - **Your own folder tree.** Create folders and subfolders in Settings (for example
   *Games › PC*) and file each repository under one. Selecting a folder lists its
   repositories and those of every folder below it.
+- **Search.** The box above the list (**Ctrl+F**) narrows it to the repositories whose name
+  or `owner/repo` has every word typed, inside the selected folder, or everywhere under *All*.
 - **Latest / Current at a glance.** Refresh checks every repository (or only the selected
   folder) and shows the newest version next to the one you have; while it checks, the button
   turns into **Stop**. Repositories that publish

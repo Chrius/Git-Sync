@@ -44,6 +44,7 @@
     <Compile Include="..\ApiClient.cs" />
     <Compile Include="..\VersionState.cs" />
     <Compile Include="..\RepoOrder.cs" />
+    <Compile Include="..\RepoSearch.cs" />
     <Compile Include="..\PreferenceStore.cs" />
     <Compile Include="..\RateLimits.cs" />
     <Compile Include="..\SiteDetection.cs" />

@@ -36,6 +36,7 @@ internal static class Tests
         TestRepoStore();
         TestKeepPrevious();
         TestSorting();
+        TestSearch();
         TestRateLimits();
         TestSiteDetection();
         TestAutoCheck();
@@ -1000,6 +1001,71 @@ internal static class Tests
         Check("older database gets the column, off", false, RepoStore.Get(id)?.KeepPrevious);
 
         RepoStore.Delete(id);
+    }
+
+    private static void TestSearch()
+    {
+        Section("Search");
+
+        List<FilterFolder> folders =
+        [
+            new() { Id = 1, ParentId = null, Name = "Games" },
+            new() { Id = 2, ParentId = 1, Name = "Nintendo" },
+            new() { Id = 3, ParentId = 2, Name = "NES" },
+            new() { Id = 4, ParentId = 1, Name = "PC" },
+            new() { Id = 5, ParentId = null, Name = "Tools" }
+        ];
+
+        List<Repo> repos =
+        [
+            new() { Id = 1, Name = "The Legend of Zelda: A Link to the Past", Path = "snesrev/zelda3", FilterId = 3 },
+            new() { Id = 2, Name = "Super Mario 64", Path = "n64decomp/sm64", FilterId = 2 },
+            new() { Id = 3, Name = "Pokémon Emerald", Path = "pret/pokeemerald", FilterId = 2 },
+            new() { Id = 4, Name = "OpenTTD", Path = "OpenTTD/OpenTTD", FilterId = 4 },
+            new() { Id = 5, Name = "Zelda Tools", Path = "someone/zelda-tools", FilterId = 5 },
+            new() { Id = 6, Name = "jq", Path = "jqlang/jq", FilterId = null },
+            new() { Id = 7, Name = "GitLab CLI", Path = "gitlab-org/cli", FilterId = 5 }
+        ];
+
+        static string Ids(IEnumerable<Repo> list) => string.Join(",", list.Select(r => r.Id));
+        string Find(string? query, long? folder = null) => Ids(RepoSearch.Filter(RepoSearch.InFolder(repos, folder, folders), query));
+
+        // ----- the words -----
+
+        Check("nothing typed", 0, RepoSearch.Words(null).Length);
+        Check("only spaces", 0, RepoSearch.Words("   ").Length);
+        Check("words split on any spaces", "zelda|link", string.Join("|", RepoSearch.Words("  zelda \t link ")));
+
+        // ----- matching, under All -----
+
+        Check("nothing typed keeps everything", "1,2,3,4,5,6,7", Find(""));
+        Check("spaces only keep everything", "1,2,3,4,5,6,7", Find("   "));
+        Check("part of the name", "1,5", Find("zeld"));
+        Check("any case", "1,5", Find("ZELDA"));
+        Check("in the repository path only", "2", Find("n64decomp"));
+        Check("the path's owner/name together", "4", Find("openttd/openttd"));
+        Check("words need not be side by side", "1", Find("zelda past"));
+        Check("each word in name or path", "1", Find("snesrev link"));
+        Check("every word must match", "", Find("zelda mario"));
+        Check("accents ignored", "3", Find("pokemon"));
+        Check("accent typed, plain in the path", "3", Find("pokéemerald"));
+        Check("a word in the middle", "7", Find("lab"));
+        Check("repo outside any folder found under All", "6", Find("jq"));
+        Check("nothing matches", "", Find("doom"));
+
+        // ----- only inside the selected folder -----
+
+        Check("All shows every repo", "1,2,3,4,5,6,7", Find(null, null));
+        Check("folder includes its subfolders", "1,2,3,4", Find(null, 1));
+        Check("search inside Games leaves Tools out", "1", Find("zelda", 1));
+        Check("search inside Tools leaves Games out", "5", Find("zelda", 5));
+        Check("search inside Nintendo reaches NES below it", "1", Find("zelda", 2));
+        Check("search inside NES only", "1", Find("snes", 3));
+        Check("found elsewhere, not in this folder", "", Find("openttd", 2));
+        Check("repo without a folder only under All", "", Find("jq", 1));
+
+        // The order is the list's job: the search keeps what it was given.
+        Check("order kept for the sort", "5,1", Ids(RepoSearch.Filter([repos[4], repos[0]], "zelda")));
     }
 
     private static void TestSorting()

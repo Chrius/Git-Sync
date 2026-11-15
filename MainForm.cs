@@ -20,7 +20,18 @@ internal sealed class MainForm : Form
     private readonly IconButton _updateAll;
     private readonly RepoList _list;
     private readonly ComboBox _sort;
+    private readonly SearchBox _search;
     private readonly Label _status;
+
+    /// <summary>
+    /// Waits for a pause in the typing before filtering: every change rebuilds
+    /// the rows, and with a long list one rebuild per key would lag behind the
+    /// keyboard.
+    /// </summary>
+    private readonly System.Windows.Forms.Timer _searchTimer = new() { Interval = 200 };
+
+    /// <summary>The words the list was last filtered by, to skip rebuilding it for the same ones.</summary>
+    private string _appliedSearch = string.Empty;
 
     /// <summary>The "Sort by" choices, in the order of the drop down.</summary>
     private static readonly (RepoOrder Order, string Text)[] Orders =
@@ -148,7 +159,7 @@ internal sealed class MainForm : Form
 
         var statusLine = new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = Theme.Separator };
 
-        // ----- above the list: Sort by -----
+        // ----- above the list: search and Sort by -----
 
         var header = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = Theme.Background };
         var headerLine = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = Theme.Separator };
@@ -162,13 +173,21 @@ internal sealed class MainForm : Form
         Label sortLabel = DarkControls.CreateLabel("Sort by", 0, 0);
         sortLabel.ForeColor = Theme.DimText;
 
-        // Right-aligned, over the version columns and the buttons it reorders.
+        _search = new SearchBox("Search name or repository");
+        _search.QueryChanged += (_, _) => SearchChanged();
+        _search.Submitted += (_, _) => ApplySearch();
+        _searchTimer.Tick += (_, _) => ApplySearch();
+
+        // Sort by right-aligned, over the version columns and the buttons it
+        // reorders; the search takes the rest, from the names' edge.
         header.Resize += (_, _) =>
         {
             _sort.Location = new Point(header.ClientSize.Width - 14 - _sort.Width, (header.ClientSize.Height - _sort.Height) / 2);
             sortLabel.Location = new Point(_sort.Left - 8 - sortLabel.Width, (header.ClientSize.Height - sortLabel.Height) / 2);
+            _search.SetBounds(16, _sort.Top, Math.Max(0, sortLabel.Left - 20 - 16), _sort.Height);
         };
 
+        header.Controls.Add(_search);
         header.Controls.Add(_sort);
         header.Controls.Add(sortLabel);
 
@@ -282,16 +301,61 @@ internal sealed class MainForm : Form
 
     /// <summary>
     /// Lists the repos of the selected folder and of every folder below it, so
-    /// "Games" also shows what is filed under Nintendo › NES.
+    /// "Games" also shows what is filed under Nintendo › NES — and of those,
+    /// only what the search box matches. The search never reaches outside the
+    /// selected folder; with "All" selected it covers everything.
     /// </summary>
     private void ShowRepos(bool keepScroll)
     {
-        string empty = FilterTree.FolderOf(_tree.SelectedNode) is { } folder
-            ? $"No repositories in \"{folder.Name}\"."
-            : "No repositories yet. Click + to add one.";
+        FilterFolder? folder = FilterTree.FolderOf(_tree.SelectedNode);
+        _appliedSearch = string.Join(' ', RepoSearch.Words(_search.Query));
+        List<Repo> inFolder = VisibleRepos(_repos);
+        List<Repo> shown = RepoSearch.Filter(inFolder, _appliedSearch);
 
-        _list.ShowRepos(RepoSorting.Sort(VisibleRepos(_repos), _order), _downloads, empty, keepScroll);
+        string empty = inFolder.Count > 0 && shown.Count == 0
+            ? $"No repositories{InFolder(folder)} match \"{_appliedSearch}\"."
+            : folder is not null
+                ? $"No repositories in \"{folder.Name}\"."
+                : "No repositories yet. Click + to add one.";
+
+        _list.ShowRepos(RepoSorting.Sort(shown, _order), _downloads, empty, keepScroll);
         UpdateSummary();
+    }
+
+    private static string InFolder(FilterFolder? folder) => folder is null ? string.Empty : $" in \"{folder.Name}\"";
+
+    private static string Repositories(int count) => count == 1 ? "1 repository" : $"{count} repositories";
+
+    /// <summary>
+    /// Filters once the typing pauses. Clearing the box shows everything again
+    /// at once: there is nothing more to type then.
+    /// </summary>
+    private void SearchChanged()
+    {
+        _searchTimer.Stop();
+
+        if (RepoSearch.Words(_search.Query).Length == 0)
+        {
+            ApplySearch();
+        }
+        else
+        {
+            _searchTimer.Start();
+        }
+    }
+
+    private void ApplySearch()
+    {
+        _searchTimer.Stop();
+
+        // A space, or a change undone before the pause, leaves the same words:
+        // the list stays as it is, scroll position included.
+        string words = string.Join(' ', RepoSearch.Words(_search.Query));
+
+        if (!IsDisposed && words != _appliedSearch)
+        {
+            ShowRepos(keepScroll: false);
+        }
     }
 
     private void OrderChanged()
@@ -320,16 +384,8 @@ internal sealed class MainForm : Form
     }
 
     /// <summary>The repos of the selected folder and its subfolders, or all of them with "All" selected.</summary>
-    private List<Repo> VisibleRepos(List<Repo> repos)
-    {
-        if (FilterTree.FolderOf(_tree.SelectedNode) is not { } folder)
-        {
-            return repos;
-        }
-
-        HashSet<long> ids = FilterStore.SubtreeIds(folder.Id, _filters);
-        return [.. repos.Where(r => r.FilterId is { } id && ids.Contains(id))];
-    }
+    private List<Repo> VisibleRepos(List<Repo> repos) =>
+        RepoSearch.InFolder(repos, FilterTree.FolderOf(_tree.SelectedNode)?.Id, _filters);
 
     /// <summary>Reads one repo again after a check, a download or a pin, and redraws only its row.</summary>
     private void ReloadRepo(long id)
@@ -385,20 +441,25 @@ internal sealed class MainForm : Form
         }
 
         // Counts what the list shows: the selected folder with its subfolders,
-        // or everything under "All". (Update All still covers every repo.)
-        List<Repo> shown = VisibleRepos(_repos);
-        string? folder = FilterTree.FolderOf(_tree.SelectedNode)?.Name;
-        string where = folder is null ? string.Empty : $" in \"{folder}\"";
+        // or everything under "All", narrowed by the search. (Update All still
+        // covers every repo.)
+        List<Repo> inFolder = VisibleRepos(_repos);
+        List<Repo> shown = RepoSearch.Filter(inFolder, _appliedSearch);
+        FilterFolder? folder = FilterTree.FolderOf(_tree.SelectedNode);
+        string where = InFolder(folder);
 
         int updates = VersionState.PendingUpdates(shown).Count;
         int failed = shown.Count(r => r.Error.Length > 0);
 
-        string text = shown.Count switch
+        string text = (inFolder.Count, shown.Count) switch
         {
-            0 when folder is null => "Click + to add a repository.",
-            0 => $"No repositories{where}.",
-            1 => $"1 repository{where}",
-            _ => $"{shown.Count} repositories{where}"
+            (0, _) when folder is null => "Click + to add a repository.",
+            (0, _) => $"No repositories{where}.",
+            (_, 0) => $"No repositories{where} match \"{_appliedSearch}\"",
+            _ when _appliedSearch.Length > 0 =>
+                $"{shown.Count} of {Repositories(inFolder.Count)}{where} {(shown.Count == 1 ? "matches" : "match")} \"{_appliedSearch}\"",
+            (1, _) => $"1 repository{where}",
+            _ => $"{inFolder.Count} repositories{where}"
         };
 
         if (updates > 0)
@@ -981,16 +1042,23 @@ internal sealed class MainForm : Form
     }
 
     /// <summary>
-    /// Ctrl+V anywhere in the window does what dropping the link does. The
-    /// main window has no text field of its own, so a paste here can only mean
-    /// "add this link". Caught in ProcessCmdKey because the focus may be on the
-    /// tree or the drop down, which would otherwise take the keys for themselves.
+    /// Ctrl+V anywhere in the window does what dropping the link does — except
+    /// in the search box, the window's one text field, where it pastes text as
+    /// usual. Caught in ProcessCmdKey because the focus may be on the tree or
+    /// the drop down, which would otherwise take the keys for themselves.
+    /// Ctrl+F goes to the search box.
     /// </summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        if (keyData == (Keys.Control | Keys.V))
+        if (keyData == (Keys.Control | Keys.V) && !_search.Editing)
         {
             PasteLink();
+            return true;
+        }
+
+        if (keyData == (Keys.Control | Keys.F))
+        {
+            _search.FocusAndSelect();
             return true;
         }
 
@@ -1178,6 +1246,8 @@ internal sealed class MainForm : Form
         {
             _autoTimer.Stop();
             _autoTimer.Dispose();
+            _searchTimer.Stop();
+            _searchTimer.Dispose();
             _menu?.Dispose();
             _refreshMenu?.Dispose();
             _tips.Dispose();
