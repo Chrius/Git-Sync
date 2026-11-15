@@ -53,8 +53,9 @@ folders of your own, and downloads the releases you pick.
   `Git-Sync.db`, and the downloads, under `Apps\<folder path>\<repository folder>\`, live
   beside it. Renaming a repository's folder or changing its filter moves the downloads along,
   and so does renaming or moving a folder in Settings → Filters. A repository's *Folder* can
-  hold subfolders (`Emulators\Ky`), and *Custom folder* in its Edit window puts it anywhere
-  on disk, outside the download folder.
+  hold subfolders (`Emulators\Ky`), even inside another repository's folder — each keeps its
+  own files and its own `Old`. *Custom folder* in its Edit window puts it anywhere on disk,
+  outside the download folder.
 - **Download folder.** Settings → Data → *Use custom download folder* sends the downloads to
   another folder, on any drive, instead of `Apps`. Switching asks whether to move what is
   already downloaded along, or to leave it where it is.

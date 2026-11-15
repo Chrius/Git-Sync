@@ -1512,19 +1512,29 @@ internal static class Tests
 
         // ----- one folder inside another -----
 
+        Check("several subfolder levels", Path.Combine(AppPaths.AppsDir, "Emulators", "Retro", "Cores", "Arcade", "Ky"),
+            DownloadPaths.RepoFolder(new Repo { Folder = "Retro/Cores/Arcade/Ky", FilterId = 6 }, SampleTree));
+        Check("several levels saved", @"Retro\Cores\Arcade\Ky", DownloadPaths.NormalizeFolder("Retro/Cores/Arcade/Ky"));
+
         var emu = new Repo { Id = 1, Name = "Emu", Folder = "Emu", FilterId = 6 };
-        var nested = new Repo { Id = 2, Name = "Nested", Folder = @"Emu\Ky", FilterId = 6 };
         var apart = new Repo { Id = 3, Name = "Apart", Folder = "Other", FilterId = 6 };
-        var same = new Repo { Id = 4, Name = "Same", Folder = "Other", FilterId = 6 };
-        List<Repo> repos = [emu, nested, apart, same];
-        Check("a folder inside another repo's", "Emu",
-            DownloadPaths.OverlappingRepo(DownloadPaths.RepoFolder(nested, SampleTree), repos, nested.Id, SampleTree)?.Name);
-        Check("a folder holding another repo's", "Nested",
-            DownloadPaths.OverlappingRepo(DownloadPaths.RepoFolder(emu, SampleTree), repos, emu.Id, SampleTree)?.Name);
-        Check("side by side is fine", null,
-            DownloadPaths.OverlappingRepo(DownloadPaths.RepoFolder(apart, SampleTree), [emu, nested, apart], apart.Id, SampleTree)?.Name);
-        Check("the same folder is not one inside the other", null,
-            DownloadPaths.OverlappingRepo(DownloadPaths.RepoFolder(apart, SampleTree), [apart, same], apart.Id, SampleTree)?.Name);
+        List<Repo> repos = [emu, apart];
+        string Folder(string folder) => DownloadPaths.RepoFolder(new Repo { Folder = folder, FilterId = 6 }, SampleTree);
+
+        Check("inside another repo's folder: allowed", null, DownloadPaths.FolderConflict(Folder(@"Emu\Ky"), repos, 0, SampleTree));
+        Check("several levels inside it: allowed", null, DownloadPaths.FolderConflict(Folder(@"Emu\Cores\Arcade\Ky"), repos, 0, SampleTree));
+        Check("holding another repo's folder: allowed", null, DownloadPaths.FolderConflict(Folder(""), [apart], 0, SampleTree) is null
+            ? null : "refused");
+        Require("the very same folder: refused",
+            DownloadPaths.FolderConflict(Folder("Emu"), repos, 0, SampleTree)?.Contains("already the folder of \"Emu\"") == true);
+        Require("another repo's Old: refused",
+            DownloadPaths.FolderConflict(Folder(@"Emu\Old"), repos, 0, SampleTree)?.Contains("\"Old\" folder of \"Emu\"") == true);
+        Require("inside another repo's Old: refused", DownloadPaths.FolderConflict(Folder(@"Emu\Old\Ky"), repos, 0, SampleTree) is not null);
+        Check("a folder named Old with no repo above it: allowed", null, DownloadPaths.FolderConflict(Folder(@"Other2\Old"), repos, 0, SampleTree));
+        Require("holding another repo inside its own Old: refused",
+            DownloadPaths.FolderConflict(Folder("Emu2"), [new Repo { Id = 5, Name = "In Old", Folder = @"Emu2\Old\X", FilterId = 6 }], 0, SampleTree)
+                ?.Contains("this folder's \"Old\"") == true);
+        Check("its own folder is no conflict", null, DownloadPaths.FolderConflict(Folder("Emu"), repos, emu.Id, SampleTree));
 
         // ----- moves -----
 
@@ -1553,6 +1563,37 @@ internal static class Tests
             Check("and back", null, RepoFolderMove.Move(otherDrive, own, anywhere: true));
             Check("back: the file there", true, File.Exists(Path.Combine(own, "ky (v1).zip")));
         }
+
+        // A repo whose folder holds another repo's: only its own entries move.
+        string outer = AppsPath("Folders", "Outer");
+        string inner = Path.Combine(outer, "Cores", "Inner");
+        Touch(Path.Combine(outer, "outer (v1).zip"), "outer");
+        Touch(Path.Combine(outer, "Old", "outer (v0).zip"), "outer old");
+        Touch(Path.Combine(inner, "inner (v1).zip"), "inner");
+        string outer2 = AppsPath("Folders", "Outer2");
+        Check("outer moved, inner repo inside: done", null, RepoFolderMove.Move(outer, outer2, otherRepos: [inner]));
+        Check("outer's own file moved", true, File.Exists(Path.Combine(outer2, "outer (v1).zip")));
+        Check("outer's own Old moved", true, File.Exists(Path.Combine(outer2, "Old", "outer (v0).zip")));
+        Check("the inner repo stays where its Folder says", true, File.Exists(Path.Combine(inner, "inner (v1).zip")));
+        Check("nothing of the inner repo went along", false, Directory.Exists(Path.Combine(outer2, "Cores")));
+
+        // Into a subfolder of itself ("Outer2" to "Outer2\Retro"): the new folder stays out of its own move.
+        string deeper = Path.Combine(outer2, "Retro");
+        Check("into a subfolder of itself: done", null, RepoFolderMove.Move(outer2, deeper));
+        Check("its file there", true, File.Exists(Path.Combine(deeper, "outer (v1).zip")));
+        Check("its Old there", true, File.Exists(Path.Combine(deeper, "Old", "outer (v0).zip")));
+        Check("nothing else left beside it", "Retro", string.Join("|", Directory.EnumerateFileSystemEntries(outer2).Select(Path.GetFileName)));
+
+        // Old leaves a nested repo alone: each has its own.
+        string nestedOuter = AppsPath("Folders", "OldNest");
+        Touch(Path.Combine(nestedOuter, "n (v1).zip"));
+        Touch(Path.Combine(nestedOuter, "Sub", "Inner", "i (v1).zip"));
+        Touch(Path.Combine(nestedOuter, "Sub", "Inner", "Old", "i (v0).zip"));
+        (PathMoves nestMoves, List<string> _) = OldFolder.MoveAside(nestedOuter, [], [Path.Combine(nestedOuter, "Sub", "Inner")]);
+        Check("Old: the outer repo's file moved", true, File.Exists(Path.Combine(nestedOuter, "Old", "n (v1).zip")));
+        Check("Old: the folder holding the inner repo stays", true, File.Exists(Path.Combine(nestedOuter, "Sub", "Inner", "i (v1).zip")));
+        Check("Old: the inner repo keeps its own Old", true, File.Exists(Path.Combine(nestedOuter, "Sub", "Inner", "Old", "i (v0).zip")));
+        Check("Old: only the outer file moved", 1, nestMoves.Count);
 
         Touch(AppsPath("Folders", "Keep", "Ky", "x.txt"));
         RepoFolderMove.RemoveEmptyParents(AppsPath("Folders", "Keep", "Gone"), AppsPath("Folders"));

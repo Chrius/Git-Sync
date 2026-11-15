@@ -214,24 +214,54 @@ internal static partial class DownloadPaths
     }
 
     /// <summary>
-    /// Another repository whose folder is inside <paramref name="folder"/>, or
-    /// holds it. Two such repos would mix their files: moving one folder, or
-    /// its Old, would carry the other one's along.
+    /// Why <paramref name="folder"/> cannot be this repo's folder because of
+    /// another repo's, or null. One repo's folder may sit inside another's
+    /// ("Emu" and "Emu\Ky"): each moves and archives only what is its own.
+    /// Not the very same folder, and not inside another's Old, where that
+    /// repo's previous versions go, are trimmed and deleted — nor holding
+    /// another repo inside its own Old.
     /// </summary>
-    internal static Repo? OverlappingRepo(string folder, IEnumerable<Repo> repos, long exceptId, IReadOnlyList<FilterFolder> filters)
+    internal static string? FolderConflict(string folder, IEnumerable<Repo> repos, long exceptId, IReadOnlyList<FilterFolder> filters)
     {
         string mine = FullFolder(folder);
+        string myOld = Path.Combine(mine, OldFolder.Name);
 
-        return repos.FirstOrDefault(r =>
+        foreach (Repo other in repos.Where(r => r.Id != exceptId))
         {
-            if (r.Id == exceptId)
+            string theirs = FullFolder(RepoFolder(other, filters));
+            string theirOld = Path.Combine(theirs, OldFolder.Name);
+
+            if (string.Equals(mine, theirs, StringComparison.OrdinalIgnoreCase))
             {
-                return false;
+                return $"That is already the folder of \"{other.Name}\". Each repository needs a folder of its own; "
+                     + "one can be a subfolder of another's.";
             }
 
-            string theirs = FullFolder(RepoFolder(r, filters));
-            return DownloadRoot.IsInside(theirs, mine) || DownloadRoot.IsInside(mine, theirs);
-        });
+            if (string.Equals(mine, theirOld, StringComparison.OrdinalIgnoreCase) || DownloadRoot.IsInside(mine, theirOld))
+            {
+                return $"That is inside the \"{OldFolder.Name}\" folder of \"{other.Name}\", where its previous versions are kept. "
+                     + "Choose another folder.";
+            }
+
+            if (string.Equals(theirs, myOld, StringComparison.OrdinalIgnoreCase) || DownloadRoot.IsInside(theirs, myOld))
+            {
+                return $"The folder of \"{other.Name}\" is inside this folder's \"{OldFolder.Name}\" folder, "
+                     + "where this repository's previous versions would go. Choose another folder.";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="entry"/>, something in a repo's folder, is the
+    /// folder of another repo or holds one: such an entry is that repo's,
+    /// and stays where it is when this repo's own files move.
+    /// </summary>
+    internal static bool HoldsAny(string entry, IEnumerable<string> folders)
+    {
+        string full = FullFolder(entry);
+        return folders.Any(f => string.Equals(FullFolder(f), full, StringComparison.OrdinalIgnoreCase) || DownloadRoot.IsInside(FullFolder(f), full));
     }
 
     /// <summary>

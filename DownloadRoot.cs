@@ -104,12 +104,24 @@ internal static class FolderTransfer
     /// </summary>
     /// <returns>Old files that could not be deleted after being copied; the copies are in place.</returns>
     /// <exception cref="IOException">Nothing was moved; the message says why.</exception>
-    internal static List<string> MoveContents(string from, string to, IProgress<(long Done, long Total)>? progress, bool alwaysCopy = false)
+    internal static List<string> MoveContents(string from, string to, IProgress<(long Done, long Total)>? progress, bool alwaysCopy = false) =>
+        MoveEntries([.. Directory.EnumerateFileSystemEntries(from)], to, progress, alwaysCopy);
+
+    /// <summary>
+    /// <see cref="MoveContents"/> for some of a folder's entries only: what
+    /// belongs to another repo nested inside stays behind.
+    /// </summary>
+    internal static List<string> MoveEntries(List<string> entries, string to, IProgress<(long Done, long Total)>? progress, bool alwaysCopy = false)
     {
         Directory.CreateDirectory(to);
-        List<string> entries = [.. Directory.EnumerateFileSystemEntries(from)];
 
-        bool sameDrive = string.Equals(Path.GetPathRoot(Path.GetFullPath(from)), Path.GetPathRoot(Path.GetFullPath(to)), StringComparison.OrdinalIgnoreCase);
+        if (entries.Count == 0)
+        {
+            progress?.Report((1, 1));
+            return [];
+        }
+
+        bool sameDrive = string.Equals(Path.GetPathRoot(Path.GetFullPath(entries[0])), Path.GetPathRoot(Path.GetFullPath(to)), StringComparison.OrdinalIgnoreCase);
 
         if (sameDrive && !alwaysCopy)
         {
@@ -118,7 +130,7 @@ internal static class FolderTransfer
             return [];
         }
 
-        Copy(entries, from, to, progress);
+        Copy(entries, to, progress);
         return DeleteOriginals(entries);
     }
 
@@ -171,7 +183,7 @@ internal static class FolderTransfer
         }
     }
 
-    private static void Copy(List<string> entries, string from, string to, IProgress<(long Done, long Total)>? progress)
+    private static void Copy(List<string> entries, string to, IProgress<(long Done, long Total)>? progress)
     {
         var files = new List<(string Source, string Target)>();
         var folders = new List<string>();

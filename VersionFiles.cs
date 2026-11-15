@@ -60,7 +60,11 @@ internal static class OldFolder
     /// under way. Something that cannot be moved (open in another program)
     /// stays where it is, with a warning; the update goes on.
     /// </summary>
-    internal static (PathMoves Moves, List<string> Warnings) MoveAside(string folder, IEnumerable<string> stay)
+    /// <param name="otherRepos">
+    /// The folders of the other repositories: one nested in this folder
+    /// ("Emu\Ky" inside "Emu") is its own, with its own Old, and stays.
+    /// </param>
+    internal static (PathMoves Moves, List<string> Warnings) MoveAside(string folder, IEnumerable<string> stay, IReadOnlyCollection<string>? otherRepos = null)
     {
         var moves = new PathMoves();
         var warnings = new List<string>();
@@ -77,7 +81,8 @@ internal static class OldFolder
         };
 
         List<string> entries = [.. Directory.EnumerateFileSystemEntries(folder)
-            .Where(e => !staying.Contains(Path.GetFullPath(e)) && !IsReadme(e) && !IsWindowsMetadata(e))];
+            .Where(e => !staying.Contains(Path.GetFullPath(e)) && !IsReadme(e) && !IsWindowsMetadata(e)
+                && !DownloadPaths.HoldsAny(e, otherRepos ?? []))];
 
         if (entries.Count == 0)
         {
@@ -238,7 +243,12 @@ internal static class RepoFolderMove
     /// A repo's own "Custom folder" is on one side: it can be anywhere, so the
     /// move is not held to the download folder.
     /// </param>
-    internal static string? Move(string from, string to, bool anywhere = false)
+    /// <param name="otherRepos">
+    /// The folders of the other repositories. One nested in the folder that
+    /// moves ("Emu\Ky" inside "Emu") is its own and stays: only this repo's
+    /// entries move, and the old folder stays to hold it.
+    /// </param>
+    internal static string? Move(string from, string to, bool anywhere = false, IReadOnlyCollection<string>? otherRepos = null)
     {
         from = DownloadPaths.FullFolder(from);
         to = DownloadPaths.FullFolder(to);
@@ -258,6 +268,12 @@ internal static class RepoFolderMove
         // "Ky" to "KY" is the same folder to Windows: renamed in place.
         bool sameIgnoringCase = string.Equals(from, to, StringComparison.OrdinalIgnoreCase);
 
+        // Moved entry by entry when the folder must stay: another repo's
+        // folder is inside it, or the new place is ("Emu" to "Emu\Retro").
+        IReadOnlyCollection<string> others = otherRepos ?? [];
+        bool partial = !sameIgnoringCase
+            && (DownloadRoot.IsInside(to, from) || others.Any(o => DownloadRoot.IsInside(DownloadPaths.FullFolder(o), from)));
+
         try
         {
             if (!sameIgnoringCase)
@@ -275,6 +291,24 @@ internal static class RepoFolderMove
                 }
 
                 Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+            }
+
+            if (partial)
+            {
+                List<string> own = [.. Directory.EnumerateFileSystemEntries(from)
+                    .Where(e => !DownloadPaths.HoldsAny(e, [.. others, to]))];
+
+                try
+                {
+                    FolderTransfer.MoveEntries(own, to, null);
+                }
+                catch (IOException)
+                {
+                    TryDeleteEmpty(to);
+                    throw;
+                }
+
+                return null;
             }
 
             // A custom folder can be on another drive, where a folder cannot

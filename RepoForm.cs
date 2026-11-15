@@ -619,11 +619,9 @@ internal sealed class RepoForm : Form
         string toFolder = DownloadPaths.RepoFolder(new Repo { Folder = folder, FilterId = filterId }, _filters);
         List<Repo> others = RepoStore.List();
 
-        if (DownloadPaths.OverlappingRepo(toFolder, others, _editing?.Id ?? 0, _filters) is { } overlapping)
+        if (DownloadPaths.FolderConflict(toFolder, others, _editing?.Id ?? 0, _filters) is { } conflict)
         {
-            Warn($"That folder and the folder of \"{overlapping.Name}\" would be one inside the other:\n"
-                 + $"{DownloadPaths.RepoFolder(overlapping, _filters)}\n\n"
-                 + "Each repository needs a folder of its own.", _folder);
+            Warn(conflict, _folder);
             return;
         }
 
@@ -668,7 +666,8 @@ internal sealed class RepoForm : Form
 
         // To another drive the files are copied, which can take a while.
         Cursor = Cursors.WaitCursor;
-        string? problem = moveFolder ? RepoFolderMove.Move(_startFolder!, toFolder, anywhere) : null;
+        List<string> otherFolders = [.. others.Where(r => r.Id != _editing?.Id).Select(r => DownloadPaths.RepoFolder(r, _filters))];
+        string? problem = moveFolder ? RepoFolderMove.Move(_startFolder!, toFolder, anywhere, otherFolders) : null;
         Cursor = Cursors.Default;
 
         if (problem is not null)
@@ -722,7 +721,7 @@ internal sealed class RepoForm : Form
             // Not saved: the folder goes back where the database still says it is.
             if (moveFolder)
             {
-                RepoFolderMove.Move(toFolder, _startFolder!, anywhere);
+                RepoFolderMove.Move(toFolder, _startFolder!, anywhere, otherFolders);
             }
 
             DarkMessageBox.Show(this, "Could not save the repository.\n" + error.Message,

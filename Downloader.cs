@@ -78,7 +78,9 @@ internal static class Downloader
             throw;
         }
 
-        List<string> warnings = Finish(repo, folder, pending, DownloadedVersion(release, files), redownload);
+        // Repos nested in this one's folder keep their files out of its Old.
+        List<string> otherRepos = [.. RepoStore.List().Where(r => r.Id != repo.Id).Select(r => DownloadPaths.RepoFolder(r, filters))];
+        List<string> warnings = Finish(repo, folder, pending, DownloadedVersion(release, files), redownload, otherRepos);
         List<string> saved = [.. pending.Select(p => DownloadPaths.ToRelative(p.Final))];
 
         // Unticked, nothing is asked of the site and a README.md already there stays as it is.
@@ -102,8 +104,10 @@ internal static class Downloader
     /// moves everything in the folder into Old; and with a number of versions
     /// to keep, the oldest kept versions beyond it are deleted.
     /// </summary>
+    /// <param name="otherRepos">The other repositories' folders: one nested in this folder is never moved into its Old.</param>
     internal static List<string> Finish(
-        Repo repo, string folder, IReadOnlyList<(string Part, string Final)> pending, VersionRef version, bool redownload)
+        Repo repo, string folder, IReadOnlyList<(string Part, string Final)> pending, VersionRef version, bool redownload,
+        IReadOnlyCollection<string>? otherRepos = null)
     {
         List<string> saved = [.. pending.Select(p => DownloadPaths.ToRelative(p.Final))];
 
@@ -120,7 +124,7 @@ internal static class Downloader
 
         if (PreferenceStore.MoveOldVersions())
         {
-            (PathMoves moves, List<string> problems) = OldFolder.MoveAside(folder, pending.Select(p => p.Part));
+            (PathMoves moves, List<string> problems) = OldFolder.MoveAside(folder, pending.Select(p => p.Part), otherRepos);
             warnings.AddRange(problems);
             previousFiles = moves.Apply(previousFiles);
             kept = moves.Apply(kept);
