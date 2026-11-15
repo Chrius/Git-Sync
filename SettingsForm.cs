@@ -23,7 +23,9 @@ internal sealed class SettingsForm : Form
     {
         Text = "Settings";
         ShowIcon = false;
-        ClientSize = new Size(600, 480);
+        // Sized for the Automation tab, the fullest one: its last checkbox
+        // keeps as much room below it as the first one has above it.
+        ClientSize = new Size(600, 493);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;

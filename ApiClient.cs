@@ -252,7 +252,7 @@ internal static class ApiClient
         site.Type == ApiType.GitHub ? "application/vnd.github+json" : "application/json";
 
     /// <summary>The body of a JSON answer, or null for 404/409 when <paramref name="missingIsNull"/>.</summary>
-    private static async Task<string?> GetJsonAsync(Site site, string url, CancellationToken cancel, bool missingIsNull = false)
+    internal static async Task<string?> GetJsonAsync(Site site, string url, CancellationToken cancel, bool missingIsNull = false)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
         timeout.CancelAfter(RequestTimeout);

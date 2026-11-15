@@ -40,6 +40,7 @@ internal static class Tests
         TestRateLimits();
         TestSiteDetection();
         TestAutoCheck();
+        TestAppUpdate();
         TestDataTransfer();
 
         if (args.Contains("--online"))
@@ -1313,6 +1314,75 @@ internal static class Tests
         Check("download README.md: on again", true, PreferenceStore.DownloadReadme());
     }
 
+    // ---------- Git-Sync's own updates ----------
+
+    private static void TestAppUpdate()
+    {
+        Section("Git-Sync updates");
+
+        Check("tag with v", new Version(1, 0, 6, 0), AppUpdate.ParseTag("v1.0.6"));
+        Check("tag without v", new Version(1, 0, 6, 0), AppUpdate.ParseTag("1.0.6"));
+        Check("capital V and spaces", new Version(2, 1, 0, 0), AppUpdate.ParseTag("  V2.1.0 "));
+        Check("pre-release suffix dropped", new Version(1, 1, 0, 0), AppUpdate.ParseTag("v1.1.0-beta.2"));
+        Check("build metadata dropped", new Version(1, 0, 7, 0), AppUpdate.ParseTag("v1.0.7+abc123"));
+        Check("two parts", new Version(1, 1, 0, 0), AppUpdate.ParseTag("v1.1"));
+        Check("one part", new Version(2, 0, 0, 0), AppUpdate.ParseTag("v2"));
+        Check("four parts kept", new Version(1, 0, 6, 1), AppUpdate.ParseTag("v1.0.6.1"));
+        Check("not a version", null, AppUpdate.ParseTag("nightly"));
+        Check("empty", null, AppUpdate.ParseTag(""));
+        Check("nothing saved", null, AppUpdate.ParseTag(null));
+
+        // "v1.1" against the exe's four parts: without filling in the missing
+        // ones, Version says 1.1 < 1.1.0.0 and an equal version looks older.
+        Check("v1.1 is the same version as 1.1.0.0", false,
+            AppUpdate.ShouldOffer(Release("v1.1"), new Version(1, 1, 0, 0), null));
+
+        Check("shown as three parts", "1.0.5", AppUpdate.Display(new Version(1, 0, 5, 0)));
+        Check("fourth part shown when used", "1.0.5.2", AppUpdate.Display(new Version(1, 0, 5, 2)));
+
+        var running = new Version(1, 0, 5, 0);
+        Check("newer: offered", true, AppUpdate.ShouldOffer(Release("v1.0.6"), running, null));
+        Check("same: not offered", false, AppUpdate.ShouldOffer(Release("v1.0.5"), running, null));
+        Check("older: not offered", false, AppUpdate.ShouldOffer(Release("v1.0.4"), running, null));
+        Check("10 after 9, not by text", true, AppUpdate.ShouldOffer(Release("v1.0.10"), new Version(1, 0, 9, 0), null));
+        Check("skipped: not offered", false, AppUpdate.ShouldOffer(Release("v1.0.6"), running, new Version(1, 0, 6, 0)));
+        Check("newer than the skipped one: offered again", true,
+            AppUpdate.ShouldOffer(Release("v1.0.7"), running, new Version(1, 0, 6, 0)));
+        Check("older than the skipped one: stays skipped", false,
+            AppUpdate.ShouldOffer(Release("v1.0.6"), running, new Version(1, 0, 7, 0)));
+        Check("skipped one older than this exe: newer still offered", true,
+            AppUpdate.ShouldOffer(Release("v1.0.6"), running, new Version(1, 0, 3, 0)));
+
+        // ----- the answer of releases/latest -----
+
+        AppRelease? latest = AppUpdate.ParseLatest("""
+            { "tag_name": "v1.0.6", "name": "Git-Sync 1.0.6", "draft": false, "prerelease": false,
+              "html_url": "https://github.com/Chrius/Git-Sync/releases/tag/v1.0.6" }
+            """);
+        Check("tag read", "v1.0.6", latest?.Tag);
+        Check("version read", new Version(1, 0, 6, 0), latest?.Version);
+        Check("draft ignored", null, AppUpdate.ParseLatest("""{ "tag_name": "v1.0.6", "draft": true }"""));
+        Check("pre-release ignored", null, AppUpdate.ParseLatest("""{ "tag_name": "v1.0.6", "prerelease": true }"""));
+        Check("tag that is not a version", null, AppUpdate.ParseLatest("""{ "tag_name": "nightly" }"""));
+        Check("no tag", null, AppUpdate.ParseLatest("""{ "message": "Not Found" }"""));
+
+        // ----- saved settings -----
+
+        Check("check on launch: on by default", true, AppUpdate.Enabled());
+        AppUpdate.SetEnabled(false);
+        Check("check on launch: off", false, AppUpdate.Enabled());
+        AppUpdate.SetEnabled(true);
+        Check("check on launch: on again", true, AppUpdate.Enabled());
+
+        Check("nothing skipped by default", null, AppUpdate.Skipped());
+        AppUpdate.Skip(Release("v1.0.6"));
+        Check("skipped version saved", new Version(1, 0, 6, 0), AppUpdate.Skipped());
+        AppUpdate.Skip(Release("v1.0.7"));
+        Check("skipping a newer one replaces it", new Version(1, 0, 7, 0), AppUpdate.Skipped());
+
+        static AppRelease Release(string tag) => new(tag, AppUpdate.ParseTag(tag)!);
+    }
+
     // ---------- export and import ----------
 
     /// <summary>Keeps every report as it is made; Progress&lt;T&gt; would deliver them later, on another thread.</summary>
@@ -1876,6 +1946,18 @@ internal static class Tests
         catch (ApiException error)
         {
             Require("missing repository reported: " + error.Message, error.Message.Contains("404", StringComparison.Ordinal));
+        }
+
+        // Git-Sync's own newest release, as the launch check asks for it.
+        try
+        {
+            AppRelease? own = await AppUpdate.LatestAsync(CancellationToken.None);
+            Require("Git-Sync's newest release found", own is not null);
+            Require($"Git-Sync's newest release is at least 1.0.5: {own?.Tag}", own is not null && own.Version >= new Version(1, 0, 5, 0));
+        }
+        catch (ApiException error)
+        {
+            Check("Git-Sync's newest release", "no error", error.Message);
         }
     }
 }

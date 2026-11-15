@@ -17,15 +17,33 @@ internal static class DarkMessageBox
 
     internal static DialogResult Show(
         IWin32Window? owner, string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon,
-        MessageBoxDefaultButton defaultButton = MessageBoxDefaultButton.Button1)
+        MessageBoxDefaultButton defaultButton = MessageBoxDefaultButton.Button1) =>
+        Show(owner, text, caption, ChoicesOf(buttons), icon, defaultButton);
+
+    /// <summary>
+    /// With buttons of its own, such as "Skip update" beside Yes and No.
+    /// Escape answers the Cancel or No one, as in the system box.
+    /// </summary>
+    internal static DialogResult Show(
+        IWin32Window? owner, string text, string caption, IReadOnlyList<(string Text, DialogResult Result)> choices,
+        MessageBoxIcon icon, MessageBoxDefaultButton defaultButton = MessageBoxDefaultButton.Button1)
     {
-        using var form = new MessageForm(text, caption, buttons, icon, defaultButton, owned: owner is not null);
+        using var form = new MessageForm(text, caption, choices, icon, defaultButton, owned: owner is not null);
 
         // The sound the system box would make, so a warning still sounds like one.
         SoundOf(icon)?.Play();
 
         return owner is null ? form.ShowDialog() : form.ShowDialog(owner);
     }
+
+    private static List<(string Text, DialogResult Result)> ChoicesOf(MessageBoxButtons buttons) => buttons switch
+    {
+        MessageBoxButtons.OKCancel => [("OK", DialogResult.OK), ("Cancel", DialogResult.Cancel)],
+        MessageBoxButtons.YesNo => [("Yes", DialogResult.Yes), ("No", DialogResult.No)],
+        MessageBoxButtons.YesNoCancel => [("Yes", DialogResult.Yes), ("No", DialogResult.No), ("Cancel", DialogResult.Cancel)],
+        MessageBoxButtons.RetryCancel => [("Retry", DialogResult.Retry), ("Cancel", DialogResult.Cancel)],
+        _ => [("OK", DialogResult.OK)]
+    };
 
     private static SystemSound? SoundOf(MessageBoxIcon icon) => icon switch
     {
@@ -47,7 +65,7 @@ internal static class DarkMessageBox
         private const int ButtonGap = 8;
 
         internal MessageForm(
-            string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon,
+            string text, string caption, IReadOnlyList<(string Text, DialogResult Result)> choices, MessageBoxIcon icon,
             MessageBoxDefaultButton defaultButton, bool owned)
         {
             Text = caption;
@@ -92,16 +110,10 @@ internal static class DarkMessageBox
                 Bounds = new Rectangle(textLeft, Edge + ((contentHeight - textSize.Height) / 2), textSize.Width + 4, textSize.Height)
             });
 
-            List<(string Text, DialogResult Result)> choices = buttons switch
-            {
-                MessageBoxButtons.OKCancel => [("OK", DialogResult.OK), ("Cancel", DialogResult.Cancel)],
-                MessageBoxButtons.YesNo => [("Yes", DialogResult.Yes), ("No", DialogResult.No)],
-                MessageBoxButtons.YesNoCancel => [("Yes", DialogResult.Yes), ("No", DialogResult.No), ("Cancel", DialogResult.Cancel)],
-                MessageBoxButtons.RetryCancel => [("Retry", DialogResult.Retry), ("Cancel", DialogResult.Cancel)],
-                _ => [("OK", DialogResult.OK)]
-            };
-
-            int buttonsWidth = (choices.Count * ButtonWidth) + ((choices.Count - 1) * ButtonGap);
+            // All as wide as the widest, like the system box; a longer text
+            // such as "Skip update" widens them all instead of being cut.
+            int buttonWidth = Math.Max(ButtonWidth, choices.Max(c => TextRenderer.MeasureText(c.Text, Font).Width) + 24);
+            int buttonsWidth = (choices.Count * buttonWidth) + ((choices.Count - 1) * ButtonGap);
             int width = Math.Max(Math.Max(textLeft + textSize.Width + Edge, buttonsWidth + (2 * Edge)), 300);
             int buttonsTop = Edge + contentHeight + 22;
             ClientSize = new Size(width, buttonsTop + ButtonHeight + 16);
@@ -115,7 +127,7 @@ internal static class DarkMessageBox
                 {
                     Text = choices[i].Text,
                     DialogResult = choices[i].Result,
-                    Bounds = new Rectangle(left + (i * (ButtonWidth + ButtonGap)), buttonsTop, ButtonWidth, ButtonHeight),
+                    Bounds = new Rectangle(left + (i * (buttonWidth + ButtonGap)), buttonsTop, buttonWidth, ButtonHeight),
                     TabIndex = i
                 };
 

@@ -41,6 +41,9 @@ folders of your own, and downloads the releases you pick.
   **Ctrl+V** with one copied. Self-hosted servers are recognised automatically.
 - **Tokens and limits.** Settings → Sites takes a token per site and shows how many API
   requests are left.
+- **Its own updates.** At launch, Git-Sync asks GitHub whether a newer version of itself is
+  out and offers to open the releases page. *Skip update* stops the reminders until the next
+  version; Settings → Automation → *Check for updates on launch* turns the check off.
 - **Portable.** One self-contained `Git-Sync.exe` (no .NET install needed). Its database,
   `Git-Sync.db`, and the downloads, under `Apps\<folder path>\<repository folder>\`, live
   beside it.

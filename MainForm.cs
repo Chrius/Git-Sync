@@ -83,9 +83,14 @@ internal sealed class MainForm : Form
     /// <summary>True while the tree is rebuilt: its selection events are not the user's.</summary>
     private bool _loadingTree;
 
+    /// <summary>A newer Git-Sync found at launch, waiting for this window to be the active one.</summary>
+    private AppRelease? _appUpdate;
+
     internal MainForm()
     {
-        Text = "Git-Sync";
+        // The version of this exe, the same one the update check compares:
+        // which copy is open shows at a glance when several are around.
+        Text = "Git-Sync v" + AppUpdate.Display(AppUpdate.Running);
         Icon = ExeIcon();
         ClientSize = new Size(1180, 700);
         MinimumSize = new Size(1000, 480);
@@ -258,6 +263,95 @@ internal sealed class MainForm : Form
     {
         base.OnShown(e);
         AutoTick();
+        CheckAppUpdate();
+    }
+
+    // ---------- Git-Sync's own updates ----------
+
+    /// <summary>
+    /// "Check for updates on launch": asks GitHub once, in the background, and
+    /// says nothing when it cannot be reached — being offline is no reason to
+    /// interrupt the start, and the next launch asks again.
+    /// </summary>
+    private async void CheckAppUpdate()
+    {
+        if (!AppUpdate.Enabled())
+        {
+            return;
+        }
+
+        AppRelease? latest;
+
+        try
+        {
+            latest = await AppUpdate.LatestAsync(_closing.Token);
+        }
+        catch (Exception error) when (error is ApiException or OperationCanceledException)
+        {
+            return;
+        }
+
+        if (IsDisposed || latest is null || !AppUpdate.ShouldOffer(latest, AppUpdate.Running, AppUpdate.Skipped()))
+        {
+            return;
+        }
+
+        _appUpdate = latest;
+        OfferAppUpdate();
+    }
+
+    /// <summary>The window became active again: a dialog over it closed, or it was restored.</summary>
+    protected override void OnActivated(EventArgs e)
+    {
+        base.OnActivated(e);
+
+        // After the activation is over: a modal box opened from inside it
+        // would start while Windows is still moving the focus.
+        if (_appUpdate is not null)
+        {
+            BeginInvoke(OfferAppUpdate);
+        }
+    }
+
+    /// <summary>
+    /// Not while a dialog or message box is open (the window is disabled
+    /// then, so CanFocus is false): the answer can arrive after Settings or
+    /// Add was opened, and a second box would pile on top of it. Not while
+    /// minimized either, where the box would open centered on nothing. It
+    /// then waits for the window to be activated again.
+    /// </summary>
+    private void OfferAppUpdate()
+    {
+        if (_appUpdate is not { } update || IsDisposed || !CanFocus || WindowState == FormWindowState.Minimized)
+        {
+            return;
+        }
+
+        _appUpdate = null;
+
+        DialogResult answer = DarkMessageBox.Show(this,
+            $"A new version of Git-Sync is available: {AppUpdate.Display(update.Version)}.\n"
+            + $"You have {AppUpdate.Display(AppUpdate.Running)}.\n\n"
+            + "Do you want to download it?",
+            "Git-Sync", [("Yes", DialogResult.Yes), ("No", DialogResult.No), ("Skip update", DialogResult.Ignore)],
+            MessageBoxIcon.Information);
+
+        // No (or Escape, or the X) asks again on the next launch.
+        if (answer == DialogResult.Yes)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(AppUpdate.ReleasesPage) { UseShellExecute = true });
+            }
+            catch (Exception error)
+            {
+                Warn("Could not open the browser.\n" + error.Message);
+            }
+        }
+        else if (answer == DialogResult.Ignore)
+        {
+            AppUpdate.Skip(update);
+        }
     }
 
     /// <summary>

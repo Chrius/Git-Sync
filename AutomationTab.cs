@@ -5,8 +5,9 @@ using System.Windows.Forms;
 namespace GitSync;
 
 /// <summary>
-/// "Automation" tab: checking every repository by itself on a schedule, and
-/// whether downloads offer the source archives. Saved as soon as it changes,
+/// "Automation" tab: checking every repository by itself on a schedule,
+/// whether downloads offer the source archives, and whether Git-Sync looks
+/// for a newer version of itself when it opens. Saved as soon as it changes,
 /// like the Filters tab; the main window picks the new settings up when
 /// Settings closes.
 /// </summary>
@@ -27,6 +28,8 @@ internal sealed class AutomationTab : UserControl
     private readonly Label _sourceHint;
     private readonly CheckBox _readme;
     private readonly Label _readmeHint;
+    private readonly Panel _appSeparator;
+    private readonly CheckBox _appUpdates;
 
     /// <summary>True while the screen fills itself, so it is not taken for user changes.</summary>
     private bool _filling;
@@ -127,6 +130,25 @@ internal sealed class AutomationTab : UserControl
         };
         Controls.Add(_readmeHint);
 
+        // About Git-Sync itself rather than the repositories: set apart by a line.
+        _appSeparator = new Panel { BackColor = Theme.Separator, Height = 1 };
+        Controls.Add(_appSeparator);
+
+        _appUpdates = new CheckBox
+        {
+            Text = "Check for updates on launch",
+            AutoSize = true,
+            TabIndex = 4
+        };
+        _appUpdates.CheckedChanged += (_, _) =>
+        {
+            if (!_filling)
+            {
+                AppUpdate.SetEnabled(_appUpdates.Checked);
+            }
+        };
+        Controls.Add(_appUpdates);
+
         Fill();
     }
 
@@ -154,6 +176,9 @@ internal sealed class AutomationTab : UserControl
         _sourceHint.SetBounds(Indent, _showSource.Bottom + 6, width - Indent, TextHeight(_sourceHint, width - Indent));
         _readme.Location = new Point(0, _sourceHint.Bottom + 16);
         _readmeHint.SetBounds(Indent, _readme.Bottom + 6, width - Indent, TextHeight(_readmeHint, width - Indent));
+
+        _appSeparator.SetBounds(0, _readmeHint.Bottom + 14, width, 1);
+        _appUpdates.Location = new Point(0, _appSeparator.Bottom + 16);
     }
 
     private static int TextHeight(Label label, int width) =>
@@ -169,6 +194,7 @@ internal sealed class AutomationTab : UserControl
         _interval.SelectedIndex = Array.FindIndex(AutoCheck.Intervals, i => i.Minutes == settings.Minutes);
         _showSource.Checked = PreferenceStore.ShowSource();
         _readme.Checked = PreferenceStore.DownloadReadme();
+        _appUpdates.Checked = AppUpdate.Enabled();
         _filling = false;
 
         ShowInterval(settings.Enabled);

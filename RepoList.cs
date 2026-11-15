@@ -20,6 +20,13 @@ internal sealed class RepoList : Panel
         BackColor = Theme.Background;
         DoubleBuffered = true;
         DarkControls.UseDarkScrollbars(this);
+
+        // Takes the focus when clicked, as a list box does. A panel never
+        // takes it by itself, so after typing in the search box a click on the
+        // list left the caret there, and Ctrl+V pasted the copied link into
+        // the search instead of adding it. Only another control that takes
+        // the focus, such as the tree, got it out.
+        SetStyle(ControlStyles.Selectable, true);
     }
 
     internal RepoRow? RowOf(long id) => _rows.GetValueOrDefault(id);
@@ -62,6 +69,10 @@ internal sealed class RepoList : Panel
             row.EditRequested += (_, _) => EditRequested?.Invoke(this, row.Repo);
             row.MenuRequested += (_, point) => MenuRequested?.Invoke(this, (row.Repo, point));
 
+            // The rows themselves do not take the focus: the list does, so it
+            // never moves to a row that the next rebuild throws away.
+            row.MouseDown += (_, _) => Focus();
+
             Controls.Add(row);
             _rows[repo.Id] = row;
         }
@@ -88,6 +99,13 @@ internal sealed class RepoList : Panel
         {
             each.ShowSelectedColumn = pinned;
         }
+    }
+
+    /// <summary>The empty space below the rows, or the "No repositories" text.</summary>
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        Focus();
     }
 
     protected override void OnPaint(PaintEventArgs e)
