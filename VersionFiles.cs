@@ -246,9 +246,9 @@ internal static class RepoFolderMove
 
         // Paths come from names typed in Edit, never from outside; checked
         // anyway, as every delete is, since a move empties the old place.
-        if (!DownloadPaths.IsInsideApps(from) || !DownloadPaths.IsInsideApps(to))
+        if (!DownloadPaths.IsInsideDownloads(from) || !DownloadPaths.IsInsideDownloads(to))
         {
-            return "The download folder is outside Apps, so it was not moved.";
+            return "That folder is outside the download folder, so it was not moved.";
         }
 
         // "Ky" to "KY" is the same folder to Windows: renamed in place.

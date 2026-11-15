@@ -41,6 +41,7 @@ internal static class Tests
         TestVersionHistory();
         TestDownloadSequence();
         TestFileCheck();
+        TestDownloadRoot();
         TestSorting();
         TestSearch();
         TestRateLimits();
@@ -99,6 +100,7 @@ internal static class Tests
         }
 
         Database.Prepare();
+        DownloadRoot.Reload();
 
         Console.WriteLine("Test database: " + AppPaths.DatabaseFile);
     }
@@ -276,11 +278,11 @@ internal static class Tests
 
         Check("relative path", @"Apps\Games\x.zip",
             DownloadPaths.ToRelative(Path.Combine(AppPaths.AppsDir, "Games", "x.zip")));
-        Check("inside Apps", true, DownloadPaths.IsInsideApps(DownloadPaths.ToAbsolute(@"Apps\Games\x.zip")));
-        Check("next to the exe is outside Apps", false, DownloadPaths.IsInsideApps(DownloadPaths.ToAbsolute("Git-Sync.db")));
-        Check("climbing out of Apps", false, DownloadPaths.IsInsideApps(DownloadPaths.ToAbsolute(@"Apps\..\Git-Sync.db")));
-        Check("above the exe", false, DownloadPaths.IsInsideApps(DownloadPaths.ToAbsolute(@"..\outside.txt")));
-        Check("Apps itself", false, DownloadPaths.IsInsideApps(AppPaths.AppsDir));
+        Check("inside Apps", true, DownloadPaths.IsInsideDownloads(DownloadPaths.ToAbsolute(@"Apps\Games\x.zip")));
+        Check("next to the exe is outside Apps", false, DownloadPaths.IsInsideDownloads(DownloadPaths.ToAbsolute("Git-Sync.db")));
+        Check("climbing out of Apps", false, DownloadPaths.IsInsideDownloads(DownloadPaths.ToAbsolute(@"Apps\..\Git-Sync.db")));
+        Check("above the exe", false, DownloadPaths.IsInsideDownloads(DownloadPaths.ToAbsolute(@"..\outside.txt")));
+        Check("Apps itself", false, DownloadPaths.IsInsideDownloads(AppPaths.AppsDir));
     }
 
     private static void TestFilesToDelete()
@@ -1298,6 +1300,177 @@ internal static class Tests
         RepoStore.Delete(repo.Id);
         RepoStore.Delete(moved.Id);
         FilterStore.Delete(tree);
+    }
+
+    /// <summary>"Use custom download folder": where downloads go, and moving them from one folder to another.</summary>
+    private static void TestDownloadRoot()
+    {
+        Section("Custom download folder");
+
+        string Under(string root, params string[] parts) => Path.Combine([root, .. parts]);
+
+        Check("Apps by default", AppPaths.AppsDir, DownloadRoot.Current);
+        Check("no custom folder by default", null, DownloadRoot.Custom());
+
+        string outside = Path.Combine(Path.GetTempPath(), "Git-Sync tests", "Custom");
+        Check("path in Git-Sync's folder saved relative", @"Apps\Games\x.zip", DownloadPaths.ToRelative(AppsPath("Games", "x.zip")));
+        Check("path outside it saved whole", Under(outside, "x.zip"), DownloadPaths.ToRelative(Under(outside, "x.zip")));
+        Check("and read back", Under(outside, "x.zip"), DownloadPaths.ToAbsolute(DownloadPaths.ToRelative(Under(outside, "x.zip"))));
+
+        // ----- which folders can be chosen -----
+
+        Require("the same folder refused", DownloadRoot.Problem(AppPaths.AppsDir, AppPaths.AppsDir) is not null);
+        Require("a folder inside the current one refused", DownloadRoot.Problem(AppsPath("Games"), AppPaths.AppsDir) is not null);
+        Require("Git-Sync's own folder refused", DownloadRoot.Problem(AppPaths.BaseDir, AppPaths.AppsDir) is not null);
+        Require("a folder around Git-Sync's refused", DownloadRoot.Problem(Path.GetDirectoryName(AppPaths.BaseDir)!, AppPaths.AppsDir) is not null);
+        Check("another folder accepted", null, DownloadRoot.Problem(outside, AppPaths.AppsDir));
+        Check("back to Apps accepted", null, DownloadRoot.Problem(AppPaths.AppsDir, outside));
+
+        // ----- the setting -----
+
+        try
+        {
+            DownloadRoot.SetCustom(outside);
+            Check("custom folder in use", outside, DownloadRoot.Current);
+            Check("repo folders under it", Under(outside, "Ky"), DownloadPaths.RepoFolder(new Repo { Folder = "Ky" }, []));
+            Check("deleting allowed inside it", true, DownloadPaths.IsInsideDownloads(Under(outside, "Ky", "a.zip")));
+            Check("and no longer in Apps", false, DownloadPaths.IsInsideDownloads(AppsPath("Ky", "a.zip")));
+
+            DownloadRoot.SetCustom(null);
+            Check("unticked: back to Apps", AppPaths.AppsDir, DownloadRoot.Current);
+            Check("unticked: the folder forgotten", null, DownloadRoot.Custom());
+        }
+        finally
+        {
+            DownloadRoot.SetCustom(null);
+        }
+
+        // ----- moving everything, same drive -----
+
+        string a = Path.Combine(AppPaths.BaseDir, "RootTest", "A");
+        string b = Path.Combine(AppPaths.BaseDir, "RootTest", "B");
+        Touch(Under(a, "Games", "PC", "Ky", "ky (v1).zip"), "ky");
+        Touch(Under(a, "Games", "PC", "Ky", "Old", "ky (v0).zip"), "old ky");
+        Touch(Under(a, "loose.txt"), "loose");
+
+        Check("nothing in the way", 0, FolderTransfer.Conflicts(a, b).Count);
+        Check("same drive: nothing left behind", 0, FolderTransfer.MoveContents(a, b, null).Count);
+        Check("same drive: folders keep their places", "ky", File.ReadAllText(Under(b, "Games", "PC", "Ky", "ky (v1).zip")));
+        Check("same drive: subfolders too", "old ky", File.ReadAllText(Under(b, "Games", "PC", "Ky", "Old", "ky (v0).zip")));
+        Check("same drive: loose files too", "loose", File.ReadAllText(Under(b, "loose.txt")));
+        Check("same drive: old folder emptied", false, FolderTransfer.HasContent(a));
+
+        Touch(Under(a, "Games", "other.txt"));
+        Check("a name the target has is in the way", "Games", string.Join("|", FolderTransfer.Conflicts(a, b)));
+
+        // ----- moving by copying (another drive) -----
+
+        string c = Path.Combine(AppPaths.BaseDir, "RootTest", "C");
+        string dated = Under(b, "Games", "PC", "Ky", "ky (v1).zip");
+        File.SetLastWriteTimeUtc(dated, new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc));
+        var reports = new List<(long Done, long Total)>();
+        Check("copied: nothing left behind", 0, FolderTransfer.MoveContents(b, c, new Recorder(reports), alwaysCopy: true).Count);
+        Check("copied: files there", "old ky", File.ReadAllText(Under(c, "Games", "PC", "Ky", "Old", "ky (v0).zip")));
+        Check("copied: dates kept (earlier downloads are told apart by them)", new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc),
+            File.GetLastWriteTimeUtc(Under(c, "Games", "PC", "Ky", "ky (v1).zip")));
+        Check("copied: originals deleted", false, FolderTransfer.HasContent(b));
+        Check("copied: progress ends at the total", true, reports.Count > 0 && reports[^1].Done == reports[^1].Total);
+
+        // A file that cannot be read: nothing is copied, nothing deleted.
+        string held = Under(c, "Games", "PC", "Ky", "ky (v1).zip");
+
+        using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            try
+            {
+                FolderTransfer.MoveContents(c, b, null, alwaysCopy: true);
+                Check("copy with a file in use", "an error", "no error");
+            }
+            catch (IOException)
+            {
+                Check("copy with a file in use: nothing left in the target", false,
+                    Directory.Exists(b) && Directory.EnumerateFiles(b, "*", SearchOption.AllDirectories).Any());
+                Check("copy with a file in use: everything still at the source", true, File.Exists(Under(c, "loose.txt")) && File.Exists(held));
+            }
+        }
+
+        // Renamed on the same drive, with a folder in use: what moved comes back.
+        string first = Touch(Under(c, "A-free", "f.txt"));
+
+        using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            try
+            {
+                FolderTransfer.MoveContents(c, b, null);
+                Check("rename with a folder in use", "an error", "no error");
+            }
+            catch (IOException)
+            {
+                Check("rename with a folder in use: the one moved first is back", true, File.Exists(first));
+                Check("rename with a folder in use: target left empty", false, FolderTransfer.HasContent(b));
+            }
+        }
+
+        // To a real other drive, when the temp folder is on one.
+        string tempRoot = Path.GetPathRoot(Path.GetTempPath())!;
+
+        if (!string.Equals(tempRoot, Path.GetPathRoot(AppPaths.BaseDir), StringComparison.OrdinalIgnoreCase))
+        {
+            if (Directory.Exists(outside))
+            {
+                Directory.Delete(outside, recursive: true);
+            }
+
+            Check($"to drive {tempRoot}: moved", 0, FolderTransfer.MoveContents(c, outside, null).Count);
+            Check($"to drive {tempRoot}: files there", "old ky", File.ReadAllText(Under(outside, "Games", "PC", "Ky", "Old", "ky (v0).zip")));
+            Check($"to drive {tempRoot}: originals gone", false, FolderTransfer.HasContent(c));
+            Directory.Delete(outside, recursive: true);
+        }
+        else
+        {
+            Console.WriteLine("       (the temp folder is on the same drive: no move to another drive tested)");
+        }
+
+        // ----- the records -----
+
+        Site github = SiteStore.List().First(s => s.Host == "github.com");
+        var repo = new Repo { Name = "Rooted", SiteId = github.Id, Path = "root/test", Folder = "Rooted", KeepPrevious = true };
+        RepoStore.Save(repo);
+        string file = Touch(AppsPath("Rooted", "r (v2).zip"));
+        string kept = Touch(AppsPath("Rooted", "Old", "r (v1).zip"));
+        RepoStore.SetCurrent(repo.Id, new VersionRef("v2", null, VersionKind.Release), [DownloadPaths.ToRelative(file)],
+            [new PreviousVersion(new VersionRef("v1", null, VersionKind.Release), [DownloadPaths.ToRelative(kept)])]);
+
+        var moves = new PathMoves();
+        moves.Add(AppPaths.AppsDir, outside);
+        RepoStore.ApplyMoves(moves);
+        Check("records follow to a folder outside Git-Sync's, saved whole", Under(outside, "Rooted", "r (v2).zip"), RepoStore.Get(repo.Id)!.CurrentFiles[0]);
+        Check("kept versions too", Under(outside, "Rooted", "Old", "r (v1).zip"), RepoStore.PreviousVersions(repo.Id)[0].Files[0]);
+
+        try
+        {
+            // The custom folder's drive not connected: nothing is reported missing.
+            DownloadRoot.SetCustom(Path.Combine(outside, "not there"));
+            Check("folder not found: the check says so", true, FileCheck.Run().RootMissing);
+        }
+        finally
+        {
+            DownloadRoot.SetCustom(null);
+        }
+
+        RepoStore.ForgetAllFiles();
+        Check("left behind: no file recorded any more", 0, RepoStore.Get(repo.Id)!.CurrentFiles.Count);
+        Check("left behind: no kept version", 0, RepoStore.PreviousVersions(repo.Id).Count);
+        Check("left behind: the version itself stays", "v2", RepoStore.Get(repo.Id)!.Current?.Tag);
+
+        RepoStore.Delete(repo.Id);
+        Directory.Delete(Path.Combine(AppPaths.BaseDir, "RootTest"), recursive: true);
+    }
+
+    /// <summary>Keeps every report as it is made; Progress&lt;T&gt; would deliver them later, on another thread.</summary>
+    private sealed class Recorder(List<(long Done, long Total)> reports) : IProgress<(long Done, long Total)>
+    {
+        public void Report((long Done, long Total) value) => reports.Add(value);
     }
 
     private static void TestOldFolder()

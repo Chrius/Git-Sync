@@ -19,7 +19,8 @@ internal sealed class SettingsForm : Form
     /// <summary>Repositories added by imports while the window was open; the main window checks them.</summary>
     internal List<long> ImportedRepoIds { get; } = [];
 
-    internal SettingsForm()
+    /// <param name="downloadsRunning">Whether the main window is downloading: the download folder cannot change meanwhile.</param>
+    internal SettingsForm(Func<bool> downloadsRunning)
     {
         Text = "Settings";
         ShowIcon = false;
@@ -43,7 +44,7 @@ internal sealed class SettingsForm : Form
         _filtersTab = new FiltersTab();
         _sitesTab = new SitesTab();
 
-        _dataTab = new DataTab();
+        _dataTab = new DataTab(downloadsRunning);
 
         // An import can add folders and self-hosted servers, which the other tabs already loaded.
         _dataTab.Imported += result =>

@@ -6,7 +6,7 @@ using System.Windows.Forms;
 namespace GitSync;
 
 /// <summary>
-/// What Check Files found: the recorded files that are gone, and what in Apps
+/// What Check Files found: the recorded files that are gone, and what in the download folder
 /// belongs to no repository. Double-click shows an item in Explorer; the
 /// records of the missing files can be dropped.
 /// </summary>
@@ -58,9 +58,9 @@ internal sealed class FileCheckForm : Form
         _missing = AddList(78, 140);
         ShowMissing();
 
-        Label looseTitle = Title($"In Apps, but part of no repository ({Number(result.Loose.Count)})", 232);
+        Label looseTitle = Title($"In the download folder, but part of no repository ({Number(result.Loose.Count)})", 232);
         ListBox loose = AddList(252, 168);
-        string apps = AppPaths.AppsDir + Path.DirectorySeparatorChar;
+        string apps = DownloadRoot.Current + Path.DirectorySeparatorChar;
 
         foreach (string path in result.Loose)
         {
@@ -70,7 +70,7 @@ internal sealed class FileCheckForm : Form
 
         if (result.Loose.Count == 0)
         {
-            loose.Items.Add(new Line("Nothing: everything in Apps belongs to a repository.", string.Empty));
+            loose.Items.Add(new Line("Nothing: everything in the download folder belongs to a repository.", string.Empty));
         }
 
         Controls.Add(new Label

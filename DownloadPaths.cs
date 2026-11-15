@@ -112,17 +112,18 @@ internal static partial class DownloadPaths
     /// </summary>
     internal static string SafeFileName(string serverName) => SafeName(Path.GetFileName(serverName.Replace('\\', '/')));
 
-    /// <summary>Apps\&lt;filter path&gt;\&lt;repo folder&gt;, absolute.</summary>
+    /// <summary>&lt;download folder&gt;\&lt;filter path&gt;\&lt;repo folder&gt;, absolute.</summary>
     internal static string RepoFolder(Repo repo, IReadOnlyList<FilterFolder> filters) =>
         TreeFolder(repo.FilterId, repo.Folder, filters);
 
     /// <summary>
-    /// Apps\&lt;path of the parent&gt;\&lt;name&gt;, absolute: a repo's folder inside
-    /// its filter, or a folder of the tree itself.
+    /// &lt;download folder&gt;\&lt;path of the parent&gt;\&lt;name&gt;, absolute: a
+    /// repo's folder inside its filter, or a folder of the tree itself. The
+    /// download folder is Apps, or the custom one (<see cref="DownloadRoot"/>).
     /// </summary>
     internal static string TreeFolder(long? parentId, string name, IReadOnlyList<FilterFolder> filters)
     {
-        var parts = new List<string> { AppPaths.AppsDir };
+        var parts = new List<string> { DownloadRoot.Current };
         parts.AddRange(FilterStore.PathOf(parentId, filters).Select(SafeName));
         parts.Add(SafeName(name));
         return Path.Combine([.. parts]);
@@ -130,23 +131,29 @@ internal static partial class DownloadPaths
 
     /// <summary>
     /// Saved relative to the exe, so a moved or copied Git-Sync folder still
-    /// knows which files are its own.
+    /// knows which files are its own. A file outside Git-Sync's folder (a
+    /// custom download folder) is saved whole: as "..\..\Downloads\x" it
+    /// would point somewhere else as soon as Git-Sync's folder moved.
     /// </summary>
-    internal static string ToRelative(string fullPath) => Path.GetRelativePath(AppPaths.BaseDir, fullPath);
+    internal static string ToRelative(string fullPath)
+    {
+        string full = Path.GetFullPath(fullPath);
+        string own = Path.GetFullPath(AppPaths.BaseDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
+        return full.StartsWith(own, StringComparison.OrdinalIgnoreCase) ? Path.GetRelativePath(AppPaths.BaseDir, full) : full;
+    }
 
     internal static string ToAbsolute(string relativePath) =>
         Path.GetFullPath(Path.Combine(AppPaths.BaseDir, relativePath));
 
     /// <summary>
-    /// Deletion is only ever allowed inside Apps. The file list comes from the
-    /// database, and a damaged or hand-edited row must not be able to point a
-    /// delete at anything else on the disk.
+    /// Deletion is only ever allowed inside the download folder in use (Apps,
+    /// or the custom one). The file list comes from the database, and a
+    /// damaged or hand-edited row must not be able to point a delete at
+    /// anything else on the disk.
     /// </summary>
-    internal static bool IsInsideApps(string fullPath)
-    {
-        string apps = Path.GetFullPath(AppPaths.AppsDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        return Path.GetFullPath(fullPath).StartsWith(apps, StringComparison.OrdinalIgnoreCase);
-    }
+    internal static bool IsInsideDownloads(string fullPath) =>
+        DownloadRoot.IsInside(Path.GetFullPath(fullPath), Path.GetFullPath(DownloadRoot.Current));
 
     /// <summary>
     /// Files of the previous version to delete after a new one is saved: all of

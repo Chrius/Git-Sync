@@ -32,7 +32,7 @@ folders of your own, and downloads the releases you pick.
   one of yours, or not at all. Repositories already in the list are skipped. Tokens are never
   exported.
 - **Check Files.** Settings → Data lists the downloaded files that are no longer on disk, and
-  anything in `Apps` that belongs to no repository.
+  anything in the download folder that belongs to no repository.
 - **Version in every file name.** Files are saved as `name (build-212).zip`, so builds that
   only differ by a hash can be told apart. The repository's `README.md` is saved beside them.
 - **Keep previous versions** per repository, or let each update replace the old files. Keep
@@ -53,6 +53,9 @@ folders of your own, and downloads the releases you pick.
   `Git-Sync.db`, and the downloads, under `Apps\<folder path>\<repository folder>\`, live
   beside it. Renaming a repository's folder or changing its filter moves the downloads along,
   and so does renaming or moving a folder in Settings → Filters.
+- **Download folder.** Settings → Data → *Use custom download folder* sends the downloads to
+  another folder, on any drive, instead of `Apps`. Switching asks whether to move what is
+  already downloaded along, or to leave it where it is.
 
 > `Git-Sync.db` holds your tokens in plain text. Keep it private when you copy the folder.
 

@@ -37,8 +37,17 @@ internal static class Downloader
         string folder = DownloadPaths.RepoFolder(repo, filters);
 
         // Checked on every download, as asked: the folder may have been
-        // deleted or renamed by hand since the last one.
-        Directory.CreateDirectory(folder);
+        // deleted or renamed by hand since the last one. A custom download
+        // folder on a drive that is not connected fails here, as an error of
+        // this download rather than a crash.
+        try
+        {
+            Directory.CreateDirectory(folder);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new ApiException($"Could not create the download folder {folder}: {error.Message}");
+        }
 
         var pending = new List<(string Part, string Final)>();
 
@@ -133,7 +142,7 @@ internal static class Downloader
 
     /// <summary>
     /// Deletes the files of versions no longer kept. Never a file that is
-    /// still the new version's or a kept version's, and only inside Apps.
+    /// still the new version's or a kept version's, and only inside the download folder.
     /// What cannot be deleted (open in another program) stays listed, as the
     /// oldest version, so the next update tries again. Returns the new list.
     /// </summary>
@@ -153,7 +162,7 @@ internal static class Downloader
             {
                 string full = DownloadPaths.ToAbsolute(file);
 
-                if (owned.Contains(full) || !DownloadPaths.IsInsideApps(full))
+                if (owned.Contains(full) || !DownloadPaths.IsInsideDownloads(full))
                 {
                     continue;
                 }
@@ -253,7 +262,7 @@ internal static class Downloader
     /// <summary>
     /// Moves the finished ".part" files to their names, then deletes the
     /// previous version's files that the new ones did not overwrite. Only
-    /// files Git-Sync itself recorded are ever deleted, and only inside Apps.
+    /// files Git-Sync itself recorded are ever deleted, and only inside the download folder.
     /// </summary>
     /// <param name="keepAs">
     /// "Keep previous versions": null deletes the old files as above. A tag
@@ -312,7 +321,7 @@ internal static class Downloader
         {
             string full = DownloadPaths.ToAbsolute(old);
 
-            if (!DownloadPaths.IsInsideApps(full))
+            if (!DownloadPaths.IsInsideDownloads(full))
             {
                 continue;
             }

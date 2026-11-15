@@ -10,13 +10,17 @@ internal sealed record MissingFile(long RepoId, string RepoName, string Version,
 /// <summary>What "Check Files" found.</summary>
 /// <param name="Checked">Files recorded for the repositories, current and kept versions.</param>
 /// <param name="Missing">Recorded files that are no longer on disk.</param>
-/// <param name="Loose">Files and folders in Apps that belong to no repository, full paths, in folder order.</param>
+/// <param name="Loose">Files and folders in the download folder that belong to no repository, full paths, in folder order.</param>
 /// <param name="Adopted">Earlier downloads found in repository folders and recorded now.</param>
-internal sealed record FileCheckResult(int Checked, List<MissingFile> Missing, List<string> Loose, int Adopted);
+/// <param name="RootMissing">
+/// The download folder itself is not there (a custom one on a drive that is
+/// not connected): nothing was checked, rather than every file reported missing.
+/// </param>
+internal sealed record FileCheckResult(int Checked, List<MissingFile> Missing, List<string> Loose, int Adopted, bool RootMissing = false);
 
 /// <summary>
 /// Settings → Data → Check Files: whether the files recorded for every
-/// repository are still on disk, and what in Apps belongs to none.
+/// repository are still on disk, and what in the download folder belongs to none.
 /// </summary>
 internal static partial class FileCheck
 {
@@ -41,8 +45,16 @@ internal static partial class FileCheck
 
     internal static FileCheckResult Run()
     {
-        int adopted = AdoptDownloads();
         List<Repo> repos = RepoStore.List();
+
+        // "Forget Missing Files" after a check like that would wipe every record.
+        if (!Directory.Exists(DownloadRoot.Current) && repos.Any(r => r.CurrentFiles.Count > 0 || RepoStore.PreviousVersions(r.Id).Count > 0))
+        {
+            return new FileCheckResult(0, [], [], 0, RootMissing: true);
+        }
+
+        int adopted = AdoptDownloads();
+        repos = RepoStore.List();
         List<FilterFolder> filters = FilterStore.List();
 
         var missing = new List<MissingFile>();
@@ -78,7 +90,7 @@ internal static partial class FileCheck
     }
 
     /// <summary>
-    /// Everything in Apps outside every repository's folder that is not a
+    /// Everything in the download folder outside every repository's folder that is not a
     /// recorded file either. Inside a repository's folder nothing is loose —
     /// what the user put there is theirs, recorded or not. A folder that holds
     /// no repository and no recorded file is listed whole, not file by file.
@@ -86,7 +98,7 @@ internal static partial class FileCheck
     /// </summary>
     internal static List<string> FindLoose(IReadOnlyList<Repo> repos, IReadOnlyList<FilterFolder> filters, IReadOnlySet<string> recorded)
     {
-        string apps = Full(AppPaths.AppsDir);
+        string apps = Full(DownloadRoot.Current);
         var loose = new List<string>();
 
         if (!Directory.Exists(apps))

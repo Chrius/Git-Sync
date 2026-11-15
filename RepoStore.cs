@@ -317,6 +317,23 @@ internal static class RepoStore
         return changed;
     }
 
+    /// <summary>
+    /// A new download folder without the files of the old one: no repository
+    /// lists a file any more, current or kept, so nothing reports them
+    /// missing and no update deletes or moves them. The versions themselves
+    /// stay, so a repository is still shown as up to date.
+    /// </summary>
+    internal static void ForgetAllFiles()
+    {
+        using SqliteConnection connection = Database.Open();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE Repos SET CurrentFiles = '';
+            DELETE FROM PreviousVersions;
+            """;
+        command.ExecuteNonQuery();
+    }
+
     /// <summary>Replaces the repo's kept versions with this list, keeping its order.</summary>
     private static void WritePrevious(SqliteConnection connection, SqliteTransaction transaction, long id, IReadOnlyList<PreviousVersion> previous)
     {

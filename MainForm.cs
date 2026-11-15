@@ -1308,7 +1308,7 @@ internal sealed class MainForm : Form
     {
         List<long> imported;
 
-        using (var settings = new SettingsForm())
+        using (var settings = new SettingsForm(() => _downloads.Count > 0))
         {
             settings.ShowDialog(this);
             imported = settings.ImportedRepoIds;
