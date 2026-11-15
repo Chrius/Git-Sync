@@ -115,6 +115,13 @@ internal sealed class FiltersTab : UserControl
         }
     }
 
+    /// <summary>Picks up folders added by an import, keeping the selection.</summary>
+    internal void ReloadFolders()
+    {
+        _tree.EndRename(commit: true);
+        Reload(Selected?.Id);
+    }
+
     private void Reload(long? selectId)
     {
         _filters = FilterStore.List();
@@ -241,7 +248,7 @@ internal sealed class FiltersTab : UserControl
             ? $"Delete the folder \"{folder.Name}\"?"
             : $"Delete the folder \"{folder.Name}\" and its {(subfolders == 1 ? "subfolder" : $"{subfolders} subfolders")}?";
 
-        DialogResult answer = MessageBox.Show(this, question, "Settings",
+        DialogResult answer = DarkMessageBox.Show(this, question, "Settings",
             MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
 
             // "No" by default: a delete is never confirmed by an Enter pressed by mistake.
@@ -335,5 +342,5 @@ internal sealed class FiltersTab : UserControl
     }
 
     private void Warn(string message) =>
-        MessageBox.Show(this, message, "Settings", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        DarkMessageBox.Show(this, message, "Settings", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 }

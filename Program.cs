@@ -22,7 +22,7 @@ internal static class Program
             // Without the database there is no program: better to say why than
             // to open an empty window that fails on every click. Happens with a
             // read-only folder, such as a write-protected pen drive.
-            MessageBox.Show(
+            DarkMessageBox.Show(
                 "Could not open the database at\n" + AppPaths.DatabaseFile + "\n\n" + error.Message,
                 "Git-Sync", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;

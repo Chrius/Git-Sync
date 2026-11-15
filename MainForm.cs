@@ -46,6 +46,17 @@ internal sealed class MainForm : Form
     private ContextMenuStrip? _refreshMenu;
     private bool _refreshing;
 
+    /// <summary>Cancels the check that is running: what the Refresh button does while it shows Stop.</summary>
+    private CancellationTokenSource? _refreshCancel;
+
+    /// <summary>
+    /// After the user stops a check, the automatic one waits a whole period
+    /// instead of starting again on the next tick — the stopped check did not
+    /// complete the period, so it would otherwise be due at once. Only in
+    /// memory: after a restart an overdue check runs as usual.
+    /// </summary>
+    private DateTimeOffset _autoHeldUntil = DateTimeOffset.MinValue;
+
     /// <summary>
     /// Looks every 30 seconds whether the automatic check is due. A short
     /// tick instead of one long timer: the period counts from the last full
@@ -237,7 +248,7 @@ internal sealed class MainForm : Form
     /// </summary>
     private void AutoTick()
     {
-        if (!_auto.Enabled || _refreshing || IsDisposed || !CanFocus)
+        if (!_auto.Enabled || _refreshing || IsDisposed || !CanFocus || DateTimeOffset.UtcNow < _autoHeldUntil)
         {
             return;
         }
@@ -363,7 +374,8 @@ internal sealed class MainForm : Form
         });
     }
 
-    private void UpdateSummary()
+    /// <param name="note">Said first, before the counts: how a stopped check ended.</param>
+    private void UpdateSummary(string? note = null)
     {
         UpdateAllButton();
 
@@ -403,6 +415,11 @@ internal sealed class MainForm : Form
         {
             DateTimeOffset next = AutoCheck.NextCheck(_auto.LastFullCheck, _auto.Minutes, DateTimeOffset.Now).ToLocalTime();
 
+            if (_autoHeldUntil > next)
+            {
+                next = _autoHeldUntil.ToLocalTime();
+            }
+
             text += next <= DateTimeOffset.Now
                 ? " · checking for updates shortly"
                 : next.Date == DateTime.Today
@@ -410,7 +427,7 @@ internal sealed class MainForm : Form
                     : $" · next check tomorrow at {next.ToString("HH:mm", CultureInfo.InvariantCulture)}";
         }
 
-        SetStatus(text, Theme.DimText);
+        SetStatus(note is null ? text : $"{note} · {text}", Theme.DimText);
     }
 
     private void SetStatus(string text, Color color)
@@ -428,8 +445,15 @@ internal sealed class MainForm : Form
     /// </summary>
     private void RefreshClicked()
     {
+        // While a check runs the button shows Stop.
         if (_refreshing)
         {
+            if (_refreshCancel is { IsCancellationRequested: false } running)
+            {
+                running.Cancel();
+                SetStatus("Stopping…", Theme.Text);
+            }
+
             return;
         }
 
@@ -481,7 +505,12 @@ internal sealed class MainForm : Form
         }
 
         _refreshing = true;
-        _refresh.Enabled = false;
+
+        // Stop cancels the requests under way and skips the repos still waiting;
+        // closing the window does the same.
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(_closing.Token);
+        _refreshCancel = cancel;
+        ShowRefreshAsStop(true);
 
         int done = 0;
         SetStatus($"Checking 0/{repos.Count}…", Theme.Text);
@@ -491,20 +520,32 @@ internal sealed class MainForm : Form
 
         await Task.WhenAll(repos.Select(async repo =>
         {
-            await gate.WaitAsync();
+            try
+            {
+                await gate.WaitAsync(cancel.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            bool checkedIt;
 
             try
             {
-                await CheckAsync(repo);
+                checkedIt = await CheckAsync(repo, cancel.Token);
             }
             finally
             {
                 gate.Release();
             }
 
-            done++;
+            if (checkedIt)
+            {
+                done++;
+            }
 
-            if (!IsDisposed)
+            if (!IsDisposed && !cancel.IsCancellationRequested)
             {
                 SetStatus($"Checking {done}/{repos.Count}…", Theme.Text);
             }
@@ -515,21 +556,45 @@ internal sealed class MainForm : Form
             return;
         }
 
+        bool stopped = cancel.IsCancellationRequested;
+        _refreshCancel = null;
         _refreshing = false;
-        _refresh.Enabled = true;
+        ShowRefreshAsStop(false);
 
-        if (everything)
+        if (stopped)
         {
-            AutoCheck.SetLastFullCheck(DateTimeOffset.UtcNow);
-            _auto = AutoCheck.Load();
+            // Not a full check: the period does not start over, and the
+            // automatic check holds off one period rather than starting again.
+            _autoHeldUntil = DateTimeOffset.UtcNow.AddMinutes(_auto.Minutes);
+            UpdateSummary($"Check stopped after {done} of {repos.Count}");
+        }
+        else
+        {
+            if (everything)
+            {
+                AutoCheck.SetLastFullCheck(DateTimeOffset.UtcNow);
+                _auto = AutoCheck.Load();
+                _autoHeldUntil = DateTimeOffset.MinValue;
+            }
+
+            UpdateSummary();
         }
 
-        UpdateSummary();
         Resort();
     }
 
-    /// <summary>Checks one repo and saves Latest, or the error that the red X shows.</summary>
-    private async Task CheckAsync(Repo repo)
+    private void ShowRefreshAsStop(bool stop)
+    {
+        _refresh.Picture = stop ? IconButton.StopIcon : IconButton.RefreshIcon;
+        _tips.SetToolTip(_refresh, stop ? "Stop checking" : "Refresh: check for new versions");
+    }
+
+    /// <summary>
+    /// Checks one repo and saves Latest, or the error that the red X shows.
+    /// False when it was cancelled first: nothing is saved then, so a stopped
+    /// check leaves the row as it was instead of marking it failed.
+    /// </summary>
+    private async Task<bool> CheckAsync(Repo repo, CancellationToken cancel)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         Site? site = SiteOf(repo);
@@ -538,24 +603,32 @@ internal sealed class MainForm : Form
         {
             RepoStore.SetError(repo.Id, "Its site was deleted in Settings.", now);
             ReloadRepo(repo.Id);
-            return;
+            return true;
         }
 
         try
         {
-            Release? latest = await ApiClient.CheckLatestAsync(site, repo, _closing.Token);
+            Release? latest = await ApiClient.CheckLatestAsync(site, repo, cancel);
             RepoStore.SetLatest(repo.Id, latest?.ToVersion(), now);
         }
         catch (ApiException error)
         {
+            // A request cut short by Stop can surface as a failure of its own
+            // (the connection dropped): that is not the repo's fault.
+            if (cancel.IsCancellationRequested)
+            {
+                return false;
+            }
+
             RepoStore.SetError(repo.Id, error.Message, now);
         }
         catch (OperationCanceledException)
         {
-            return;
+            return false;
         }
 
         ReloadRepo(repo.Id);
+        return true;
     }
 
     // ---------- downloads ----------
@@ -715,7 +788,7 @@ internal sealed class MainForm : Form
         }
 
         ReloadAll(keepScroll: true);
-        _ = CheckAsync(saved);
+        _ = CheckAsync(saved, _closing.Token);
     }
 
     /// <summary>
@@ -748,7 +821,7 @@ internal sealed class MainForm : Form
 
         if (window.AddressChanged)
         {
-            _ = CheckAsync(saved);
+            _ = CheckAsync(saved, _closing.Token);
         }
     }
 
@@ -760,7 +833,7 @@ internal sealed class MainForm : Form
             return;
         }
 
-        DialogResult answer = MessageBox.Show(this,
+        DialogResult answer = DarkMessageBox.Show(this,
             $"Remove \"{repo.Name}\" from the list?\n\nFiles already downloaded stay in\n{DownloadPaths.RepoFolder(repo, _filters)}",
             "Git-Sync", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
 
@@ -1005,7 +1078,7 @@ internal sealed class MainForm : Form
                 ? "no filter"
                 : string.Join("\\", FilterStore.PathOf(existing.FilterId, _filters));
 
-            MessageBox.Show(this,
+            DarkMessageBox.Show(this,
                 $"{site.Host}/{match.Path} is already in the list as \"{existing.Name}\" ({where}).",
                 "Git-Sync", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
@@ -1059,13 +1132,22 @@ internal sealed class MainForm : Form
 
     private void OpenSettings(object? sender, EventArgs e)
     {
+        List<long> imported;
+
         using (var settings = new SettingsForm())
         {
             settings.ShowDialog(this);
+            imported = settings.ImportedRepoIds;
         }
 
         _auto = AutoCheck.Load();
         ReloadAll(keepScroll: true);
+
+        // Imported repositories are checked like one just added, so their rows show a Latest.
+        if (imported.Count > 0)
+        {
+            RefreshRepos([.. RepoStore.List().Where(r => imported.Contains(r.Id))], everything: false);
+        }
 
         // Switched on with a period that has already run out: check now, not in 30 seconds.
         AutoTick();
@@ -1075,7 +1157,7 @@ internal sealed class MainForm : Form
     {
         if (_downloads.Count > 0)
         {
-            DialogResult answer = MessageBox.Show(this,
+            DialogResult answer = DarkMessageBox.Show(this,
                 "Downloads are still running. Stop them and quit?", "Git-Sync",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
 
@@ -1106,5 +1188,5 @@ internal sealed class MainForm : Form
     }
 
     private void Warn(string message) =>
-        MessageBox.Show(this, message, "Git-Sync", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        DarkMessageBox.Show(this, message, "Git-Sync", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 }

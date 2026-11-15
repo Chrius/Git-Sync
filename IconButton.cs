@@ -32,8 +32,9 @@ internal sealed class IconButton : Control
     internal static readonly Image PlusIcon = DrawPlus(128);
     internal static readonly Image RefreshIcon = DrawRefresh(128);
     internal static readonly Image UpdateAllIcon = DrawUpdateAll(128);
+    internal static readonly Image StopIcon = DrawStop(128);
 
-    private readonly Image _icon;
+    private Image _icon;
     private readonly System.Windows.Forms.Timer _fade;
     private bool _mouseOver;
     private float _opacity = RestOpacity;
@@ -54,6 +55,18 @@ internal sealed class IconButton : Control
 
         _fade = new System.Windows.Forms.Timer { Interval = 15 };
         _fade.Tick += Animate;
+    }
+
+    /// <summary>The icon shown; Refresh turns into Stop while a check runs.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal Image Picture
+    {
+        get => _icon;
+        set
+        {
+            _icon = value;
+            Invalidate();
+        }
     }
 
     protected override void OnEnabledChanged(EventArgs e)
@@ -291,6 +304,28 @@ internal sealed class IconButton : Control
                 new PointF(side * 0.74f, side * 0.44f),
                 new PointF(side * 0.50f, side * 0.72f)
             });
+        }
+
+        g.Dispose();
+        return image;
+    }
+
+    /// <summary>
+    /// A rounded square, the usual stop sign of players and browsers. A bit
+    /// smaller than the other icons: a full-size solid square outweighs their
+    /// thin strokes.
+    /// </summary>
+    private static Image DrawStop(int side)
+    {
+        (Bitmap image, Graphics g) = Canvas(side);
+
+        float size = side * 0.62f;
+        float start = (side - size) / 2f;
+
+        using (var brush = new SolidBrush(IconColor))
+        using (GraphicsPath square = DarkControls.RoundedRectangle(new RectangleF(start, start, size, size), side * 0.09f))
+        {
+            g.FillPath(brush, square);
         }
 
         g.Dispose();

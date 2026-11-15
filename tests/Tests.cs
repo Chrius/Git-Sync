@@ -39,6 +39,7 @@ internal static class Tests
         TestRateLimits();
         TestSiteDetection();
         TestAutoCheck();
+        TestDataTransfer();
 
         if (args.Contains("--online"))
         {
@@ -1236,6 +1237,254 @@ internal static class Tests
         Check("show source code: on", true, PreferenceStore.ShowSource());
         PreferenceStore.SetShowSource(false);
         Check("show source code: off again", false, PreferenceStore.ShowSource());
+    }
+
+    // ---------- export and import ----------
+
+    /// <summary>Keeps every report as it is made; Progress&lt;T&gt; would deliver them later, on another thread.</summary>
+    private sealed class ProgressRecorder : IProgress<int>
+    {
+        public List<int> Values { get; } = [];
+
+        public void Report(int value) => Values.Add(value);
+    }
+
+    private static void TestDataTransfer()
+    {
+        Section("Export and import");
+
+        // ----- export, from lists: nothing read from or written to the database -----
+
+        var sites = new List<Site>
+        {
+            new() { Id = 1, Host = "github.com", Type = ApiType.GitHub, Token = "ghp_secret123" },
+            new() { Id = 9, Host = "git.example.org", Type = ApiType.Gitea, Token = "gitea-secret" }
+        };
+
+        var filters = new List<FilterFolder>
+        {
+            new() { Id = 1, Name = "Games" },
+            new() { Id = 2, ParentId = 1, Name = "PC" },
+            new() { Id = 3, ParentId = 1, Name = "Empty" },
+            new() { Id = 4, Name = "Tools" },
+            new() { Id = 5, ParentId = 4, Name = "Unused" }
+        };
+
+        var pinDate = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+        var repos = new List<Repo>
+        {
+            new()
+            {
+                Id = 1, Name = "Pokémon Tool", SiteId = 1, Path = "o/poke", Folder = "Poke", FilterId = 2, KeepPrevious = true,
+                Selected = new VersionRef("v1.2", pinDate, VersionKind.Release),
+                Current = new VersionRef("v1.1-current", null, VersionKind.Release),
+                Latest = new VersionRef("v1.3-latest", null, VersionKind.Release),
+                CurrentFiles = [@"Apps\Games\PC\Poke\downloaded-file.zip"]
+            },
+            new() { Id = 2, Name = "Loose", SiteId = 9, Path = "me/loose", Folder = "Loose - loose" },
+            new() { Id = 3, Name = "Orphan", SiteId = 77, Path = "x/y", Folder = "Orphan" }
+        };
+
+        ExportData collected = DataTransfer.Collect(filters, repos, sites);
+        Check("only folders holding repos are exported, with their parents", @"Games|Games\PC",
+            string.Join("|", collected.Filters.Select(p => string.Join("\\", p))));
+        Check("repos exported; one whose site is gone is left out", "Pokémon Tool|Loose",
+            string.Join("|", collected.Repos.Select(r => r.Name)));
+
+        string json = DataTransfer.ToJson(collected, new DateTimeOffset(2026, 11, 15, 12, 0, 0, TimeSpan.Zero));
+        Check("no token in the file", false, json.Contains("secret", StringComparison.Ordinal));
+        Check("nothing about this install's downloads or checks", false,
+            json.Contains("downloaded-file", StringComparison.Ordinal)
+            || json.Contains("current", StringComparison.Ordinal)
+            || json.Contains("latest", StringComparison.Ordinal));
+        Check("names stay readable", true, json.Contains("\"Pokémon Tool\"", StringComparison.Ordinal));
+        Check("folder paths written with a slash", true, json.Contains("\"filter\": \"Games/PC\"", StringComparison.Ordinal));
+        Check("no folder written as empty text", true, json.Contains("\"filter\": \"\"", StringComparison.Ordinal));
+
+        ExportData read = DataTransfer.Parse(json);
+        ExportedRepo poke = read.Repos[0];
+        Check("round trip: site", "github.com", poke.Host);
+        Check("round trip: API", ApiType.GitHub, poke.Type);
+        Check("round trip: repository", "o/poke", poke.Path);
+        Check("round trip: download folder", "Poke", poke.Folder);
+        Check("round trip: filter", @"Games\PC", string.Join("\\", poke.Filter));
+        Check("round trip: keep previous", true, poke.KeepPrevious);
+        Check("pinned version not exported: whoever imports picks their own", false,
+            json.Contains("selectedVersion", StringComparison.Ordinal) || json.Contains("v1.2", StringComparison.Ordinal));
+
+        ExportedRepo loose = read.Repos[1];
+        Check("round trip: self-hosted API", ApiType.Gitea, loose.Type);
+        Check("round trip: in no folder", 0, loose.Filter.Count);
+        Check("round trip: not kept", false, loose.KeepPrevious);
+
+        // ----- files that are refused whole -----
+
+        static string Refused(string text)
+        {
+            try
+            {
+                DataTransfer.Parse(text);
+                return "accepted";
+            }
+            catch (FormatException error)
+            {
+                return error.Message;
+            }
+        }
+
+        const string Head = "\"format\":\"Git-Sync data\",\"version\":1";
+        Check("not JSON", "This is not a Git-Sync data file.", Refused("hello"));
+        Check("some other JSON", "This is not a Git-Sync data file.", Refused("""{"repos":[]}"""));
+        Require("made by a newer Git-Sync", Refused("""{"format":"Git-Sync data","version":99}""").Contains("newer Git-Sync", StringComparison.Ordinal));
+        Require("folder name Windows refuses",
+            Refused("{" + Head + ""","filters":[["Games","Bad:Name"]]}""").Contains("Bad:Name", StringComparison.Ordinal));
+        Require("unknown API type", Refused("{" + Head
+            + ""","repos":[{"name":"X","site":"h.org","api":"Svn","repository":"o/r","folder":"X"}]}""").Contains("unknown API", StringComparison.Ordinal));
+        Require("invalid repository address", Refused("{" + Head
+            + ""","repos":[{"name":"X","site":"github.com","api":"GitHub","repository":"one-part","folder":"X"}]}""").Contains("invalid repository", StringComparison.Ordinal));
+        Require("download folder Windows refuses", Refused("{" + Head
+            + ""","repos":[{"name":"X","site":"github.com","api":"GitHub","repository":"o/r","folder":"a?b"}]}""").Contains("folder name", StringComparison.Ordinal));
+        Require("folder name Windows refuses, in a slash path",
+            Refused("{" + Head + ""","filters":["Games/Bad:Name"]}""").Contains("Bad:Name", StringComparison.Ordinal));
+        Check("a folder named only by a repo still counts", @"A|A\B", string.Join("|", DataTransfer.Parse("{" + Head
+            + ""","repos":[{"name":"X","site":"github.com","api":"GitHub","repository":"o/r","folder":"X","filter":["A","B"]}]}""")
+            .Filters.Select(p => string.Join("\\", p))));
+
+        // ----- import of folders and repositories -----
+
+        Site gitlab = SiteStore.List().First(s => s.Host == "gitlab.com");
+        long root = FilterStore.Add(null, "importroot");
+        var existing = new Repo { Name = "Mine, renamed", SiteId = gitlab.Id, Path = "G/S/Import-C", Folder = "Mine" };
+        RepoStore.Save(existing);
+
+        string file = "{" + Head + """
+            ,"filters":[["ImportRoot"],["ImportRoot","PC"]],
+             "repos":[
+               {"name":"A","site":"GitHub.com","api":"GitHub","repository":"o/import-a","folder":"A - a","filter":["ImportRoot","PC"],
+                "keepPreviousVersions":true,"selectedVersion":{"tag":"v2","kind":"Release"}},
+               {"name":"B","site":"git.import-test.org","api":"Gitea","repository":"me/import-b","folder":"B","filter":[]},
+               {"name":"C","site":"gitlab.com","api":"GitLab","repository":"g/s/import-c","folder":"C","filter":["ImportRoot"]}
+             ]}
+            """;
+
+        ExportData both = DataTransfer.Parse(file);
+        Check("new repos before importing", 2, both.Repos.Count(r => !DataTransfer.IsAlreadyThere(r, RepoStore.List(), SiteStore.List())));
+        Check("missing folders before importing (ImportRoot matches importroot)", 1, DataTransfer.MissingFolders(both, FilterStore.List()));
+
+        ImportResult first = DataTransfer.Import(both, destinations: null);
+        Check("added", 2, first.AddedRepoIds.Count);
+        Check("already there, whatever the case of its path", 1, first.AlreadyThere);
+        Check("folders added", 1, first.FoldersAdded);
+
+        List<FilterFolder> after = FilterStore.List();
+        long? pc = DataTransfer.FindFolder(["importroot", "PC"], after);
+        Repo a = RepoStore.List().First(r => r.Path == "o/import-a");
+        Check("into the same folder as in the file", pc, a.FilterId);
+        Check("existing folder reused, not doubled", 1, after.Count(f => f.ParentId is null && f.Name.Equals("importroot", StringComparison.OrdinalIgnoreCase)));
+        Check("keep previous imported", true, a.KeepPrevious);
+        Check("a pin in an older file is ignored", null, a.Selected);
+        Check("nothing downloaded yet", null, a.Current);
+
+        Repo b = RepoStore.List().First(r => r.Path == "me/import-b");
+        Site newSite = SiteStore.List().First(s => s.Id == b.SiteId);
+        Check("unknown server added", "git.import-test.org", newSite.Host);
+        Check("with its API type", ApiType.Gitea, newSite.Type);
+        Check("and no token", string.Empty, newSite.Token);
+        Check("repo of no folder stays in none", null, b.FilterId);
+
+        Repo mine = RepoStore.Get(existing.Id)!;
+        Check("existing repo keeps its name", "Mine, renamed", mine.Name);
+        Check("existing repo keeps its folder", null, mine.FilterId);
+
+        var seen = new ProgressRecorder();
+        ImportResult second = DataTransfer.Import(both, destinations: null, seen);
+        Check("progress counts every repository of the file, ending at the total", "0,1,2,3", string.Join(",", seen.Values));
+        Check("same file again: nothing added", 0, second.AddedRepoIds.Count);
+        Check("same file again: all already there", 3, second.AlreadyThere);
+        Check("same file again: no folders added", 0, second.FoldersAdded);
+
+        // ----- repositories only -----
+
+        string other = "{" + Head + """
+            ,"filters":[["Elsewhere"],["Elsewhere","X"]],
+             "repos":[
+               {"name":"D","site":"github.com","api":"GitHub","repository":"o/import-d","folder":"D","filter":["Elsewhere","X"]},
+               {"name":"E","site":"github.com","api":"GitHub","repository":"o/import-e","folder":"E","filter":[]},
+               {"name":"F","site":"github.com","api":"GitHub","repository":"o/import-f","folder":"F","filter":["Elsewhere","X"]},
+               {"name":"A again","site":"github.com","api":"GitHub","repository":"o/import-a","folder":"A","filter":["Elsewhere"]}
+             ]}
+            """;
+
+        ExportData reposOnly = DataTransfer.Parse(other);
+        Check("folder window rows: no folder first, then folders with new repos", @"(none):1|Elsewhere\X:2",
+            string.Join("|", DataTransfer.SourceFolders(reposOnly, RepoStore.List(), SiteStore.List())
+                .Select(s => (s.Path.Count == 0 ? "(none)" : string.Join("\\", s.Path)) + ":" + s.NewRepos)));
+
+        var destinations = new Dictionary<string, long?> { [DataTransfer.Key(["Elsewhere", "X"])] = root };
+        ImportResult third = DataTransfer.Import(reposOnly, destinations);
+        Check("repos only: added", 3, third.AddedRepoIds.Count);
+        Check("repos only: the one already there skipped", 1, third.AlreadyThere);
+        Check("repos only: no folders added", 0, third.FoldersAdded);
+        Check("repos only: the file's folder is not created", null, DataTransfer.FindFolder(["Elsewhere"], FilterStore.List()));
+        Check("repos only: into the chosen folder", root, RepoStore.List().First(r => r.Path == "o/import-d").FilterId);
+        Check("repos only: no destination given -> no folder", null, RepoStore.List().First(r => r.Path == "o/import-e").FilterId);
+
+        // ----- one transaction: a failure keeps nothing -----
+
+        string failing = "{" + Head + """
+            ,"repos":[
+               {"name":"G","site":"git.rollback-test.org","api":"Gitea","repository":"o/import-g","folder":"G","filter":"Lost"},
+               {"name":"H","site":"github.com","api":"GitHub","repository":"o/import-h","folder":"H","filter":"Lost"}
+             ]}
+            """;
+
+        int reposBefore = RepoStore.List().Count;
+        int sitesBefore = SiteStore.List().Count;
+        string failure = "none";
+
+        try
+        {
+            // A destination that is no folder: the foreign key refuses the first repo, after its site was added.
+            DataTransfer.Import(DataTransfer.Parse(failing), new Dictionary<string, long?> { [DataTransfer.Key(["Lost"])] = 987654 });
+        }
+        catch (SqliteException error)
+        {
+            failure = error.SqliteErrorCode == 19 ? "constraint" : error.Message;
+        }
+
+        Check("failing import stops with the database error", "constraint", failure);
+        Check("failing import keeps no repository", reposBefore, RepoStore.List().Count);
+        Check("failing import keeps no site", sitesBefore, SiteStore.List().Count);
+
+        // ----- a big file -----
+
+        var big = new ExportData([["Big"]], []);
+
+        for (int n = 0; n < 1500; n++)
+        {
+            big.Repos.Add(new ExportedRepo($"Big {n}", "github.com", ApiType.GitHub, $"big-org/repo-{n}", $"Big {n}", ["Big"], false));
+        }
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        ImportResult bigResult = DataTransfer.Import(big, destinations: null);
+        clock.Stop();
+        Check("1,500 repositories imported", 1500, bigResult.AddedRepoIds.Count);
+        Require($"1,500 repositories in one transaction take seconds, not minutes ({clock.Elapsed.TotalSeconds:0.0} s)",
+            clock.Elapsed < TimeSpan.FromSeconds(20));
+
+        // ----- exporting changes nothing -----
+
+        static string Snapshot() =>
+            string.Join("\n", RepoStore.List().Select(r =>
+                $"{r.Id}|{r.Name}|{r.SiteId}|{r.Path}|{r.Folder}|{r.FilterId}|{r.KeepPrevious}|{r.Selected}|{r.Current}|{string.Join(",", r.CurrentFiles)}"))
+            + "\n" + string.Join("\n", FilterStore.List().Select(f => $"{f.Id}|{f.ParentId}|{f.Name}|{f.SortOrder}|{f.Expanded}"))
+            + "\n" + string.Join("\n", SiteStore.List().Select(s => $"{s.Id}|{s.Host}|{s.Type}|{s.Token}"));
+
+        string before = Snapshot();
+        string whole = DataTransfer.ToJson(
+            DataTransfer.Collect(FilterStore.List(), RepoStore.List(), SiteStore.List()), DateTimeOffset.UtcNow);
+        Check("export leaves the database as it was", before, Snapshot());
+        Check("the whole list exported", RepoStore.List().Count, DataTransfer.Parse(whole).Repos.Count);
     }
 
     // ---------- live APIs ----------

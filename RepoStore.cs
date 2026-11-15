@@ -90,10 +90,11 @@ internal static class RepoStore
     /// Inserts when Id is zero, otherwise updates the fields of the Add/Edit
     /// window. Versions are never written here.
     /// </summary>
-    internal static long Save(Repo repo)
+    /// <param name="transaction">The import's transaction (see <see cref="StoreCommand"/>); null for a write of its own.</param>
+    internal static long Save(Repo repo, SqliteTransaction? transaction = null)
     {
-        using SqliteConnection connection = Database.Open();
-        using SqliteCommand command = connection.CreateCommand();
+        using var store = new StoreCommand(transaction);
+        SqliteCommand command = store.Command;
 
         command.CommandText = repo.Id == 0
             ? """

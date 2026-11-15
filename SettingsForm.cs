@@ -12,6 +12,12 @@ namespace GitSync;
 internal sealed class SettingsForm : Form
 {
     private readonly TabControl _tabs;
+    private readonly FiltersTab _filtersTab;
+    private readonly SitesTab _sitesTab;
+    private readonly DataTab _dataTab;
+
+    /// <summary>Repositories added by imports while the window was open; the main window checks them.</summary>
+    internal List<long> ImportedRepoIds { get; } = [];
 
     internal SettingsForm()
     {
@@ -31,11 +37,45 @@ internal sealed class SettingsForm : Form
             Padding = new Point(12, 6)
         };
 
-        AddTab("Filters", new FiltersTab());
-        AddTab("Sites", new SitesTab());
+        _filtersTab = new FiltersTab();
+        _sitesTab = new SitesTab();
+
+        _dataTab = new DataTab();
+
+        // An import can add folders and self-hosted servers, which the other tabs already loaded.
+        _dataTab.Imported += result =>
+        {
+            ImportedRepoIds.AddRange(result.AddedRepoIds);
+            _filtersTab.ReloadFolders();
+            _sitesTab.ReloadSites();
+        };
+
+        AddTab("Filters", _filtersTab);
+        AddTab("Sites", _sitesTab);
         AddTab("Automation", new AutomationTab());
+        AddTab("Data", _dataTab);
 
         Controls.Add(_tabs);
+    }
+
+    /// <summary>
+    /// Stays open while an import runs: closed halfway, the main window would
+    /// reload with part of the list and never check the rest. Every way of
+    /// closing is refused, not only UserClosing — a WM_CLOSE that does not come
+    /// from the X button arrives as TaskManagerClosing, and that is how the
+    /// window got closed mid-import in testing. Only a Windows shutdown goes through.
+    /// </summary>
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (_dataTab.Busy && e.CloseReason != CloseReason.WindowsShutDown)
+        {
+            e.Cancel = true;
+            DarkMessageBox.Show(this, "The import is still running. Settings can be closed when it is done.",
+                "Settings", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        base.OnFormClosing(e);
     }
 
     private void AddTab(string title, Control content)

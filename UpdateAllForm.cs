@@ -384,7 +384,7 @@ internal sealed class UpdateAllForm : Form
     {
         if (_busy)
         {
-            DialogResult answer = MessageBox.Show(this,
+            DialogResult answer = DarkMessageBox.Show(this,
                 "A download is in progress. Stop it and close?", Text,
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
 

@@ -37,10 +37,11 @@ internal static class FilterStore
     }
 
     /// <summary>Adds a folder at the end of its siblings and returns its id.</summary>
-    internal static long Add(long? parentId, string name)
+    /// <param name="transaction">The import's transaction (see <see cref="StoreCommand"/>); null for a write of its own.</param>
+    internal static long Add(long? parentId, string name, SqliteTransaction? transaction = null)
     {
-        using SqliteConnection connection = Database.Open();
-        using SqliteCommand command = connection.CreateCommand();
+        using var store = new StoreCommand(transaction);
+        SqliteCommand command = store.Command;
 
         command.CommandText = """
             INSERT INTO Filters (ParentId, Name, SortOrder, Expanded)

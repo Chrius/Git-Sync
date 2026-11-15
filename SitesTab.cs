@@ -131,6 +131,19 @@ internal sealed class SitesTab : UserControl
         _save.Location = new Point(_cancel.Left - _save.Width - 8, buttonsTop);
     }
 
+    /// <summary>
+    /// Picks up servers added by an import. Skipped while a token edit is
+    /// unsaved, which a reload would throw away; the new servers then show
+    /// the next time Settings opens.
+    /// </summary>
+    internal void ReloadSites()
+    {
+        if (!_save.Enabled)
+        {
+            Reload(_api.SelectedIndex);
+        }
+    }
+
     private void Reload(int select)
     {
         _filling = true;
@@ -278,7 +291,7 @@ internal sealed class SitesTab : UserControl
         }
         catch (Exception error)
         {
-            MessageBox.Show(this, "Could not save the token.\n" + error.Message,
+            DarkMessageBox.Show(this, "Could not save the token.\n" + error.Message,
                 "Settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }

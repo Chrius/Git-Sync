@@ -456,7 +456,7 @@ internal sealed class RepoForm : Form
         }
         catch (Exception error)
         {
-            MessageBox.Show(this, "Could not save the repository.\n" + error.Message,
+            DarkMessageBox.Show(this, "Could not save the repository.\n" + error.Message,
                 Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
@@ -468,7 +468,7 @@ internal sealed class RepoForm : Form
 
     private void Warn(string message, Control focus)
     {
-        MessageBox.Show(this, message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        DarkMessageBox.Show(this, message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         focus.Focus();
     }
 }

@@ -157,3 +157,41 @@ internal static class Database
 
     internal static object NullableId(long? id) => id is { } value ? value : DBNull.Value;
 }
+
+/// <summary>
+/// One command of a store, on the caller's transaction when there is one,
+/// otherwise on a connection of its own.
+///
+/// An import writes a row per repository. As separate transactions each one
+/// waits for the disk — the DELETE journal syncs on every commit — and 1,500
+/// repositories took four minutes; in one transaction they take a moment, and
+/// a failure halfway leaves nothing half-imported.
+/// </summary>
+internal sealed class StoreCommand : IDisposable
+{
+    private readonly SqliteConnection? _ownConnection;
+
+    internal SqliteCommand Command { get; }
+
+    internal StoreCommand(SqliteTransaction? transaction)
+    {
+        if (transaction is null)
+        {
+            _ownConnection = Database.Open();
+            Command = _ownConnection.CreateCommand();
+        }
+        else
+        {
+            // Microsoft.Data.Sqlite refuses a command without its transaction
+            // on a connection that has one open.
+            Command = transaction.Connection!.CreateCommand();
+            Command.Transaction = transaction;
+        }
+    }
+
+    public void Dispose()
+    {
+        Command.Dispose();
+        _ownConnection?.Dispose();
+    }
+}

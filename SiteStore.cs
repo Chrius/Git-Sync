@@ -40,21 +40,36 @@ internal static class SiteStore
         Enum.TryParse(text, ignoreCase: true, out ApiType type) ? type : ApiType.GitHub;
 
     /// <summary>
-    /// Saves a server found by detection and returns it. If the host is
-    /// already there it is returned as it is, token included.
+    /// Saves a server found by detection (or named by an import) and returns
+    /// it. If the host is already there it is returned as it is, token included.
     /// </summary>
-    internal static Site Add(string host, ApiType type)
+    /// <param name="transaction">
+    /// The import's transaction. The site is read back on the same connection:
+    /// another one would not see it until the import commits.
+    /// </param>
+    internal static Site Add(string host, ApiType type, SqliteTransaction? transaction = null)
     {
-        using (SqliteConnection connection = Database.Open())
-        using (SqliteCommand command = connection.CreateCommand())
-        {
-            command.CommandText = "INSERT OR IGNORE INTO Sites (Host, ApiType) VALUES ($host, $type)";
-            command.Parameters.AddWithValue("$host", host);
-            command.Parameters.AddWithValue("$type", type.ToString());
-            command.ExecuteNonQuery();
-        }
+        using var store = new StoreCommand(transaction);
+        SqliteCommand command = store.Command;
 
-        return List().First(s => string.Equals(s.Host, host, StringComparison.OrdinalIgnoreCase));
+        // Host is COLLATE NOCASE: the lookup finds it whatever the case it was saved with.
+        command.CommandText = """
+            INSERT OR IGNORE INTO Sites (Host, ApiType) VALUES ($host, $type);
+            SELECT Id, Host, ApiType, Token FROM Sites WHERE Host = $host;
+            """;
+        command.Parameters.AddWithValue("$host", host);
+        command.Parameters.AddWithValue("$type", type.ToString());
+
+        using SqliteDataReader reader = command.ExecuteReader();
+        reader.Read();
+
+        return new Site
+        {
+            Id = reader.GetInt64(0),
+            Host = reader.GetString(1),
+            Type = ParseType(reader.GetString(2)),
+            Token = reader.GetString(3)
+        };
     }
 
     /// <summary>

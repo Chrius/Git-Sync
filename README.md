@@ -12,7 +12,8 @@ folders of your own, and downloads the releases you pick.
   *Games › PC*) and file each repository under one. Selecting a folder lists its
   repositories and those of every folder below it.
 - **Latest / Current at a glance.** Refresh checks every repository (or only the selected
-  folder) and shows the newest version next to the one you have. Repositories that publish
+  folder) and shows the newest version next to the one you have; while it checks, the button
+  turns into **Stop**. Repositories that publish
   no files are marked **SOURCE** and get their source archive instead; a repository that
   could not be checked shows a red ✕ with the reason.
 - **Download and Update.** A release with one file downloads straight away; with several,
@@ -24,6 +25,9 @@ folders of your own, and downloads the releases you pick.
   release's Source code (zip) and (tar.gz) with its other files.
 - **Automatic checks.** Settings → Automation can check every repository on its own, every
   30 minutes to 12 hours.
+- **Export and import.** Settings → Data saves your repositories and their folders to a JSON
+  file, and imports such a file into another install — with its folders, or into folders you
+  pick. Repositories already in the list are skipped. Tokens are never exported.
 - **Version in every file name.** Files are saved as `name (build-212).zip`, so builds that
   only differ by a hash can be told apart. The repository's `README.md` is saved beside them.
 - **Keep previous versions** per repository, or let each update replace the old files.
