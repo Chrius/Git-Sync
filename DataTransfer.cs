@@ -266,10 +266,17 @@ internal static class DataTransfer
             throw new FormatException($"{where} in the file has an invalid repository address.");
         }
 
-        if (!DownloadPaths.IsValidName(folder))
+        bool validFolder = DownloadPaths.IsCustomFolder(folder)
+            ? DownloadPaths.CustomFolderProblem(folder) is null
+            : DownloadPaths.IsValidFolderPath(folder);
+
+        if (!validFolder)
         {
             throw new FormatException($"{where} in the file has a folder name Windows does not allow.");
         }
+
+        // "Emulators/Ky" as someone may write it by hand, saved as Edit saves it.
+        folder = DownloadPaths.NormalizeFolder(folder);
 
         List<string> filter = e.TryGetProperty("filter", out JsonElement filterElement) ? ReadPath(filterElement) : [];
 

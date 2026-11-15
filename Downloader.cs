@@ -109,7 +109,7 @@ internal static class Downloader
 
         if (!repo.KeepPrevious || redownload)
         {
-            List<string> replaced = Commit(pending, repo.CurrentFiles, KeepAs(repo, redownload)).Warnings;
+            List<string> replaced = Commit(pending, repo.CurrentFiles, KeepAs(repo, redownload), folder).Warnings;
             RepoStore.SetCurrent(repo.Id, version, saved);
             return replaced;
         }
@@ -126,7 +126,7 @@ internal static class Downloader
             kept = moves.Apply(kept);
         }
 
-        CommitResult commit = Commit(pending, previousFiles, KeepAs(repo, redownload: false));
+        CommitResult commit = Commit(pending, previousFiles, KeepAs(repo, redownload: false), folder);
         warnings.AddRange(commit.Warnings);
         previousFiles = commit.Renamed.Apply(previousFiles);
 
@@ -135,7 +135,7 @@ internal static class Downloader
         (List<PreviousVersion> keep, List<PreviousVersion> delete) = VersionHistory.Plan(
             kept, replacedVersion, version, saved, repo.KeepVersions, f => File.Exists(DownloadPaths.ToAbsolute(f)));
 
-        keep = DeleteVersions(delete, keep, saved, warnings);
+        keep = DeleteVersions(delete, keep, saved, warnings, folder);
         RepoStore.SetCurrent(repo.Id, version, saved, keep);
         return warnings;
     }
@@ -147,7 +147,7 @@ internal static class Downloader
     /// oldest version, so the next update tries again. Returns the new list.
     /// </summary>
     private static List<PreviousVersion> DeleteVersions(
-        List<PreviousVersion> delete, List<PreviousVersion> keep, IReadOnlyList<string> current, List<string> warnings)
+        List<PreviousVersion> delete, List<PreviousVersion> keep, IReadOnlyList<string> current, List<string> warnings, string ownFolder)
     {
         var owned = new HashSet<string>(
             current.Concat(keep.SelectMany(v => v.Files)).Select(DownloadPaths.ToAbsolute), StringComparer.OrdinalIgnoreCase);
@@ -162,7 +162,7 @@ internal static class Downloader
             {
                 string full = DownloadPaths.ToAbsolute(file);
 
-                if (owned.Contains(full) || !DownloadPaths.IsInsideDownloads(full))
+                if (owned.Contains(full) || !MayDelete(full, ownFolder))
                 {
                     continue;
                 }
@@ -270,8 +270,9 @@ internal static class Downloader
     /// (a release that reuses its file names, like "app-win64.zip") is first
     /// renamed to "app-win64 (tag).zip".
     /// </param>
+    /// <param name="ownFolder">The repo's folder: a "Custom folder" can be outside the download folder, and its files are still the repo's.</param>
     internal static CommitResult Commit(
-        IReadOnlyList<(string Part, string Final)> files, IReadOnlyList<string> previous, string? keepAs = null)
+        IReadOnlyList<(string Part, string Final)> files, IReadOnlyList<string> previous, string? keepAs = null, string? ownFolder = null)
     {
         var warnings = new List<string>();
         var renamed = new PathMoves();
@@ -321,7 +322,7 @@ internal static class Downloader
         {
             string full = DownloadPaths.ToAbsolute(old);
 
-            if (!DownloadPaths.IsInsideDownloads(full))
+            if (!MayDelete(full, ownFolder))
             {
                 continue;
             }
@@ -341,6 +342,14 @@ internal static class Downloader
 
         return new CommitResult(warnings, renamed);
     }
+
+    /// <summary>
+    /// Deletes only ever happen inside the download folder, or inside the
+    /// repo's own folder (a "Custom folder" may be elsewhere).
+    /// </summary>
+    private static bool MayDelete(string full, string? ownFolder) =>
+        DownloadPaths.IsInsideDownloads(full)
+        || (ownFolder is not null && DownloadRoot.IsInside(Path.GetFullPath(full), DownloadPaths.FullFolder(ownFolder)));
 
     private static async Task FetchAsync(
         Site site, ReleaseFile file, string partPath, Action<double?, long> report, CancellationToken cancel)

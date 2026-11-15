@@ -277,6 +277,37 @@ internal static class RepoStore
         using SqliteTransaction transaction = connection.BeginTransaction();
         int changed = 0;
 
+        // A repo's "Custom folder" inside the moved place moves with it.
+        var folders = new List<(long Id, string Folder)>();
+
+        using (SqliteCommand read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = "SELECT Id, Folder FROM Repos";
+            using SqliteDataReader reader = read.ExecuteReader();
+
+            while (reader.Read())
+            {
+                folders.Add((reader.GetInt64(0), reader.GetString(1)));
+            }
+        }
+
+        foreach ((long id, string folder) in folders.Where(f => DownloadPaths.IsCustomFolder(f.Folder)))
+        {
+            string moved = DownloadPaths.FullFolder(DownloadPaths.ToAbsolute(moves.Apply(folder)));
+
+            if (!string.Equals(moved, DownloadPaths.FullFolder(folder), StringComparison.Ordinal))
+            {
+                using SqliteCommand update = connection.CreateCommand();
+                update.Transaction = transaction;
+                update.CommandText = "UPDATE Repos SET Folder = $folder WHERE Id = $id";
+                update.Parameters.AddWithValue("$id", id);
+                update.Parameters.AddWithValue("$folder", moved);
+                update.ExecuteNonQuery();
+                changed++;
+            }
+        }
+
         foreach (string table in new[] { "Repos", "PreviousVersions" })
         {
             string column = table == "Repos" ? "CurrentFiles" : "Files";
@@ -318,20 +349,28 @@ internal static class RepoStore
     }
 
     /// <summary>
-    /// A new download folder without the files of the old one: no repository
-    /// lists a file any more, current or kept, so nothing reports them
-    /// missing and no update deletes or moves them. The versions themselves
-    /// stay, so a repository is still shown as up to date.
+    /// A new download folder without the files of the old one: no record
+    /// lists a file inside <paramref name="folder"/> any more, current or
+    /// kept, so nothing reports them missing and no update deletes or moves
+    /// them. Files elsewhere (a repo's own "Custom folder") stay recorded.
+    /// The versions themselves stay, so a repository is still shown as up to date.
     /// </summary>
-    internal static void ForgetAllFiles()
+    internal static void ForgetFilesUnder(string folder)
     {
-        using SqliteConnection connection = Database.Open();
-        using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = """
-            UPDATE Repos SET CurrentFiles = '';
-            DELETE FROM PreviousVersions;
-            """;
-        command.ExecuteNonQuery();
+        string root = DownloadPaths.FullFolder(folder);
+        bool Outside(string file) => !DownloadRoot.IsInside(DownloadPaths.ToAbsolute(file), root);
+
+        foreach (Repo repo in List())
+        {
+            List<PreviousVersion> kept = PreviousVersions(repo.Id);
+            List<string> current = [.. repo.CurrentFiles.Where(Outside)];
+            List<PreviousVersion> left = [.. kept.Select(v => v with { Files = [.. v.Files.Where(Outside)] }).Where(v => v.Files.Count > 0)];
+
+            if (current.Count != repo.CurrentFiles.Count || left.Count != kept.Count || left.Sum(v => v.Files.Count) != kept.Sum(v => v.Files.Count))
+            {
+                SetFiles(repo.Id, current, left);
+            }
+        }
     }
 
     /// <summary>Replaces the repo's kept versions with this list, keeping its order.</summary>

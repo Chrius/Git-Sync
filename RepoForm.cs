@@ -27,6 +27,9 @@ internal sealed class RepoForm : Form
     private readonly TextBox _repository;
     private readonly Label _hint;
     private readonly TextBox _folder;
+    private readonly Panel _folderFrame;
+    private readonly CheckBox _customFolder;
+    private readonly Button _chooseFolder;
     private readonly ComboBox _filter;
     private readonly CheckBox _keepPrevious;
     private readonly Panel _keepFrame;
@@ -37,6 +40,13 @@ internal sealed class RepoForm : Form
 
     /// <summary>Where the files of the repo being edited are, before any change: Save moves them along.</summary>
     private readonly string? _startFolder;
+
+    /// <summary>
+    /// Where the subfolders of the repo's Folder started ("Emulators" of
+    /// "Emulators\Ky"): emptied by a move, they go, up to here. Null for a
+    /// custom folder, whose parents are the user's own.
+    /// </summary>
+    private readonly string? _startBase;
 
     private readonly List<Panel> _frames = [];
     private readonly Button _save;
@@ -69,6 +79,9 @@ internal sealed class RepoForm : Form
         _editing = editing;
         _filters = filters;
         _startFolder = editing is null ? null : DownloadPaths.RepoFolder(editing, filters);
+        _startBase = editing is null || DownloadPaths.IsCustomFolder(editing.Folder)
+            ? null
+            : DownloadPaths.FilterBase(editing.FilterId, filters);
 
         // A copy: a server detected while typing is added here, not to the main window's list.
         _sites = [.. sites];
@@ -100,6 +113,24 @@ internal sealed class RepoForm : Form
         Controls.Add(_hint);
 
         _folder = AddField("Folder", 194, 3);
+        _folderFrame = _frames[^1];
+
+        // On the Folder label's line, at the right: the field below then
+        // holds a full path, chosen with the button beside it.
+        _customFolder = new CheckBox { Text = "Custom folder", AutoSize = true, TabIndex = 7 };
+        // y 193: its text then sits on the same pixel rows as the "Folder" label (measured).
+        _customFolder.Location = new Point(ClientSize.Width - Edge - _customFolder.PreferredSize.Width, 193);
+        _customFolder.CheckedChanged += (_, _) => CustomFolderToggled();
+        Controls.Add(_customFolder);
+
+        _chooseFolder = new Button { Text = "Choose…", TabIndex = 8, Visible = false };
+        // A button draws its border one pixel inside its bounds: one pixel
+        // more above and below, and its edges meet the field's.
+        _chooseFolder.SetBounds(ClientSize.Width - Edge - 84, 194 + LabelGap - 1, 84, DarkControls.FieldHeight + 2);
+        _chooseFolder.Click += (_, _) => ChooseFolder();
+        Controls.Add(_chooseFolder);
+        _tips.SetToolTip(_customFolder,
+            "Download this repository into a folder of your choice, anywhere, instead of its place in the download folder.");
         _filter = AddList("Filter", 246, 4);
 
         _keepPrevious = new CheckBox
@@ -187,6 +218,7 @@ internal sealed class RepoForm : Form
             _site.SelectedIndex = sites.FindIndex(s => s.Id == editing.SiteId);
             _repository.Text = editing.Path;
             _folder.Text = editing.Folder;
+            _customFolder.Checked = DownloadPaths.IsCustomFolder(editing.Folder);
             SelectFilter(editing.FilterId);
             _keepPrevious.Checked = editing.KeepPrevious;
             _keepVersions.Text = editing.KeepVersions.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -213,6 +245,7 @@ internal sealed class RepoForm : Form
 
         _filling = false;
         ShowKeepVersions();
+        ShowCustomFolder();
 
         _name.TextChanged += (_, _) => FollowFolder();
         _repository.TextChanged += RepositoryChanged;
@@ -222,12 +255,89 @@ internal sealed class RepoForm : Form
         // text, which does not go through KeyPress.
         _folder.KeyPress += (_, e) =>
         {
-            if (!char.IsControl(e.KeyChar) && DownloadPaths.IsInvalidChar(e.KeyChar))
+            if (!char.IsControl(e.KeyChar) && !AllowedInFolder(e.KeyChar))
             {
                 e.Handled = true;
             }
         };
         _folder.TextChanged += (_, _) => DropInvalidFolderChars();
+    }
+
+    /// <summary>The Choose button beside Folder only with "Custom folder"; the field makes room for it.</summary>
+    private void ShowCustomFolder()
+    {
+        _chooseFolder.Visible = _customFolder.Checked;
+        int width = ClientSize.Width - (2 * Edge);
+        _folderFrame.Width = _customFolder.Checked ? width - _chooseFolder.Width - 8 : width;
+    }
+
+    /// <summary>
+    /// Ticked, Folder shows the full path of where the repo downloads now, to
+    /// be changed by hand or with Choose. Unticked, it goes back to a folder
+    /// name inside the download folder: the last folder of that path.
+    /// </summary>
+    private void CustomFolderToggled()
+    {
+        ShowCustomFolder();
+
+        if (_filling)
+        {
+            return;
+        }
+
+        string text = _folder.Text.Trim();
+        long? filterId = (_filter.SelectedItem as FilterItem)?.Id;
+
+        _filling = true;
+
+        if (_customFolder.Checked)
+        {
+            string name = DownloadPaths.IsValidFolderPath(text) ? text : _autoFolder;
+            _folder.Text = name.Length > 0 && DownloadPaths.IsValidFolderPath(name)
+                ? DownloadPaths.RepoFolder(new Repo { Folder = name, FilterId = filterId }, _filters)
+                : DownloadPaths.FilterBase(filterId, _filters);
+        }
+        else
+        {
+            string last = DownloadPaths.IsCustomFolder(text) ? Path.GetFileName(DownloadPaths.FullFolder(text)) : text;
+            _folder.Text = DownloadPaths.IsValidName(last) ? last : _autoFolder;
+        }
+
+        _filling = false;
+        _folder.Focus();
+        _folder.SelectionStart = _folder.TextLength;
+    }
+
+    private void ChooseFolder()
+    {
+        string text = _folder.Text.Trim();
+        string start = string.Empty;
+
+        // Opens on the folder typed, or the nearest one of its parents that is there.
+        if (DownloadPaths.IsCustomFolder(text))
+        {
+            for (string? folder = DownloadPaths.FullFolder(text); folder is not null; folder = Path.GetDirectoryName(folder))
+            {
+                if (Directory.Exists(folder))
+                {
+                    start = folder;
+                    break;
+                }
+            }
+        }
+
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = $"Folder to download {(_name.Text.Trim().Length > 0 ? _name.Text.Trim() : "this repository")} into",
+            UseDescriptionForTitle = true,
+            ShowNewFolderButton = true,
+            InitialDirectory = start
+        };
+
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            _folder.Text = dialog.SelectedPath;
+        }
     }
 
     private void ShowKeepVersions()
@@ -241,9 +351,18 @@ internal sealed class RepoForm : Form
         int.TryParse(_keepVersions.Text, System.Globalization.NumberStyles.None,
             System.Globalization.CultureInfo.InvariantCulture, out int count) ? count : 0;
 
+    /// <summary>
+    /// What Folder takes: a folder name's characters, \ and / between
+    /// subfolders, and with "Custom folder" the ":" of a drive too.
+    /// </summary>
+    private bool AllowedInFolder(char c) =>
+        !DownloadPaths.IsInvalidChar(c) || c is '\\' or '/' || (c == ':' && _customFolder.Checked);
+
+    private string CleanFolderText(string text) => new([.. text.Where(c => char.IsControl(c) ? false : AllowedInFolder(c))]);
+
     private void DropInvalidFolderChars()
     {
-        string clean = DownloadPaths.RemoveInvalidChars(_folder.Text);
+        string clean = CleanFolderText(_folder.Text);
 
         if (clean == _folder.Text)
         {
@@ -251,7 +370,7 @@ internal sealed class RepoForm : Form
         }
 
         // The cursor moves back by the characters dropped before it.
-        int removedBefore = _folder.SelectionStart - DownloadPaths.RemoveInvalidChars(_folder.Text[.._folder.SelectionStart]).Length;
+        int removedBefore = _folder.SelectionStart - CleanFolderText(_folder.Text[.._folder.SelectionStart]).Length;
         int cursor = _folder.SelectionStart - removedBefore;
 
         bool wasFilling = _filling;
@@ -432,6 +551,13 @@ internal sealed class RepoForm : Form
 
         string suggestion = RepoAddress.SuggestFolder(_name.Text, RepoAddress.LooksLikeAddress(_repository.Text) ? string.Empty : _repository.Text);
 
+        // A full path chosen for this repo is never replaced by a name.
+        if (_customFolder.Checked)
+        {
+            _autoFolder = suggestion;
+            return;
+        }
+
         if (_folder.Text == _autoFolder || _folder.Text.Trim().Length == 0)
         {
             _filling = true;
@@ -471,15 +597,35 @@ internal sealed class RepoForm : Form
             return;
         }
 
-        string folder = _folder.Text.Trim();
+        string folderText = _folder.Text.Trim();
 
-        if (!DownloadPaths.IsValidName(folder))
+        if (_customFolder.Checked)
         {
-            Warn("Enter a Folder name. It cannot contain \\ / : * ? \" < > | or end with a dot.", _folder);
+            if (DownloadPaths.CustomFolderProblem(folderText) is { } custom)
+            {
+                Warn(custom, _folder);
+                return;
+            }
+        }
+        else if (!DownloadPaths.IsValidFolderPath(folderText))
+        {
+            Warn("Enter a Folder name, with \\ or / between subfolders, like Emulators\\Ky. "
+                 + "A name cannot contain : * ? \" < > | or end with a dot.", _folder);
             return;
         }
 
+        string folder = DownloadPaths.NormalizeFolder(folderText);
         long? filterId = (_filter.SelectedItem as FilterItem)?.Id;
+        string toFolder = DownloadPaths.RepoFolder(new Repo { Folder = folder, FilterId = filterId }, _filters);
+        List<Repo> others = RepoStore.List();
+
+        if (DownloadPaths.OverlappingRepo(toFolder, others, _editing?.Id ?? 0, _filters) is { } overlapping)
+        {
+            Warn($"That folder and the folder of \"{overlapping.Name}\" would be one inside the other:\n"
+                 + $"{DownloadPaths.RepoFolder(overlapping, _filters)}\n\n"
+                 + "Each repository needs a folder of its own.", _folder);
+            return;
+        }
 
         if (RepoStore.FindDuplicate(site.Id, path, _editing?.Id ?? 0) is { } duplicate)
         {
@@ -492,13 +638,40 @@ internal sealed class RepoForm : Form
         // before anything is saved: if the folder cannot move, the window
         // stays open with the old values still in effect. Not when another
         // repo shares the folder — its files would go along without it knowing.
-        string toFolder = DownloadPaths.RepoFolder(new Repo { Folder = folder, FilterId = filterId }, _filters);
         bool moveFolder = _editing is not null && _startFolder is not null
             && !string.Equals(_startFolder, toFolder, StringComparison.Ordinal)
-            && !RepoStore.List().Any(r => r.Id != _editing.Id
+            && !others.Any(r => r.Id != _editing.Id
                 && string.Equals(DownloadPaths.RepoFolder(r, _filters), _startFolder, StringComparison.OrdinalIgnoreCase));
 
-        if (moveFolder && RepoFolderMove.Move(_startFolder!, toFolder) is { } problem)
+        bool movesFiles = moveFolder && Directory.Exists(_startFolder);
+
+        // A custom folder that already holds other things: with Old on, the
+        // first update would move all of them into its Old folder.
+        if (_customFolder.Checked && !movesFiles && FolderTransfer.HasContent(toFolder)
+            && _keepPrevious.Checked && PreferenceStore.MoveOldVersions()
+            && (_editing is null || !string.Equals(_startFolder, toFolder, StringComparison.OrdinalIgnoreCase)))
+        {
+            DialogResult answer = DarkMessageBox.Show(this,
+                $"This folder already has files in it:\n{toFolder}\n\n"
+                + "This repository keeps previous versions and \"Move previous versions to a different folder\" is on, "
+                + "so every update will move everything in it into an \"Old\" folder inside it. Use it anyway?",
+                Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+
+            if (answer != DialogResult.Yes)
+            {
+                _folder.Focus();
+                return;
+            }
+        }
+
+        bool anywhere = _customFolder.Checked || (_editing is not null && DownloadPaths.IsCustomFolder(_editing.Folder));
+
+        // To another drive the files are copied, which can take a while.
+        Cursor = Cursors.WaitCursor;
+        string? problem = moveFolder ? RepoFolderMove.Move(_startFolder!, toFolder, anywhere) : null;
+        Cursor = Cursors.Default;
+
+        if (problem is not null)
         {
             Warn(problem, _folder);
             return;
@@ -530,6 +703,12 @@ internal sealed class RepoForm : Form
                 RepoStore.SetFiles(repo.Id,
                     moves.Apply(RepoStore.Get(repo.Id)?.CurrentFiles ?? []),
                     moves.Apply(RepoStore.PreviousVersions(repo.Id)));
+
+                // "Emulators" of a former "Emulators\Ky", left empty.
+                if (_startBase is not null)
+                {
+                    RepoFolderMove.RemoveEmptyParents(_startFolder!, _startBase);
+                }
             }
 
             // What was checked and pinned belonged to the old address.
@@ -543,7 +722,7 @@ internal sealed class RepoForm : Form
             // Not saved: the folder goes back where the database still says it is.
             if (moveFolder)
             {
-                RepoFolderMove.Move(toFolder, _startFolder!);
+                RepoFolderMove.Move(toFolder, _startFolder!, anywhere);
             }
 
             DarkMessageBox.Show(this, "Could not save the repository.\n" + error.Message,

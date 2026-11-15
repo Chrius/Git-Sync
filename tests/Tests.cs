@@ -42,6 +42,7 @@ internal static class Tests
         TestDownloadSequence();
         TestFileCheck();
         TestDownloadRoot();
+        TestRepoFolders();
         TestSorting();
         TestSearch();
         TestRateLimits();
@@ -1458,7 +1459,7 @@ internal static class Tests
             DownloadRoot.SetCustom(null);
         }
 
-        RepoStore.ForgetAllFiles();
+        RepoStore.ForgetFilesUnder(outside);
         Check("left behind: no file recorded any more", 0, RepoStore.Get(repo.Id)!.CurrentFiles.Count);
         Check("left behind: no kept version", 0, RepoStore.PreviousVersions(repo.Id).Count);
         Check("left behind: the version itself stays", "v2", RepoStore.Get(repo.Id)!.Current?.Tag);
@@ -1471,6 +1472,159 @@ internal static class Tests
     private sealed class Recorder(List<(long Done, long Total)> reports) : IProgress<(long Done, long Total)>
     {
         public void Report((long Done, long Total) value) => reports.Add(value);
+    }
+
+    /// <summary>Subfolders in a repo's Folder, and a repo's own "Custom folder" anywhere.</summary>
+    private static void TestRepoFolders()
+    {
+        Section("Repo folders: subfolders and custom folders");
+
+        Check("one name", true, DownloadPaths.IsValidFolderPath("Ky"));
+        Check("subfolders with \\", true, DownloadPaths.IsValidFolderPath(@"Emulators\Ky"));
+        Check("subfolders with /", true, DownloadPaths.IsValidFolderPath("Emulators/Ky"));
+        Check("spaces around the names", true, DownloadPaths.IsValidFolderPath(" Emulators / Ky "));
+        Check("empty part refused", false, DownloadPaths.IsValidFolderPath(@"Emulators\\Ky"));
+        Check("leading \\ refused", false, DownloadPaths.IsValidFolderPath(@"\Ky"));
+        Check("trailing \\ refused", false, DownloadPaths.IsValidFolderPath(@"Ky\"));
+        Check(".. refused", false, DownloadPaths.IsValidFolderPath(@"..\Ky"));
+        Check("a drive refused without Custom folder", false, DownloadPaths.IsValidFolderPath(@"C:\Ky"));
+        Check("a reserved name refused", false, DownloadPaths.IsValidFolderPath(@"Emulators\CON"));
+        Check("saved with \\", @"Emulators\Ky", DownloadPaths.NormalizeFolder(" Emulators / Ky "));
+        Check("full path saved without the last \\", @"D:\Emulators\Ky", DownloadPaths.NormalizeFolder(@"D:\Emulators\Ky\"));
+
+        Check("subfolders inside the filter's folder", Path.Combine(AppPaths.AppsDir, "Emulators", "Retro", "Ky"),
+            DownloadPaths.RepoFolder(new Repo { Folder = @"Retro\Ky", FilterId = 6 }, SampleTree));
+        Check("a full path is a custom folder", true, DownloadPaths.IsCustomFolder(@"D:\Emulators\Ky"));
+        Check("a name is not", false, DownloadPaths.IsCustomFolder("Ky"));
+        Check("a custom folder is used as it is, whatever the filter", @"D:\Emulators\Ky",
+            DownloadPaths.RepoFolder(new Repo { Folder = @"D:\Emulators\Ky", FilterId = 6 }, SampleTree));
+
+        // ----- which custom folders -----
+
+        Require("not a full path", DownloadPaths.CustomFolderProblem("Ky") is not null);
+        Require("a whole drive refused", DownloadPaths.CustomFolderProblem(@"D:\")?.Contains("drive") == true);
+        Require("Git-Sync's folder refused", DownloadPaths.CustomFolderProblem(AppPaths.BaseDir) is not null);
+        Require("a folder around Git-Sync's refused", DownloadPaths.CustomFolderProblem(Path.GetDirectoryName(AppPaths.BaseDir)!) is not null);
+        Require("the download folder refused", DownloadPaths.CustomFolderProblem(AppPaths.AppsDir) is not null);
+        Require("a bad name in the path refused", DownloadPaths.CustomFolderProblem(@"D:\Emu\a*b") is not null);
+        Check("a folder elsewhere accepted", null, DownloadPaths.CustomFolderProblem(Path.Combine(Path.GetTempPath(), "Git-Sync tests", "Ky")));
+        Check("a folder inside the download folder accepted", null, DownloadPaths.CustomFolderProblem(AppsPath("Special", "Ky")));
+
+        // ----- one folder inside another -----
+
+        var emu = new Repo { Id = 1, Name = "Emu", Folder = "Emu", FilterId = 6 };
+        var nested = new Repo { Id = 2, Name = "Nested", Folder = @"Emu\Ky", FilterId = 6 };
+        var apart = new Repo { Id = 3, Name = "Apart", Folder = "Other", FilterId = 6 };
+        var same = new Repo { Id = 4, Name = "Same", Folder = "Other", FilterId = 6 };
+        List<Repo> repos = [emu, nested, apart, same];
+        Check("a folder inside another repo's", "Emu",
+            DownloadPaths.OverlappingRepo(DownloadPaths.RepoFolder(nested, SampleTree), repos, nested.Id, SampleTree)?.Name);
+        Check("a folder holding another repo's", "Nested",
+            DownloadPaths.OverlappingRepo(DownloadPaths.RepoFolder(emu, SampleTree), repos, emu.Id, SampleTree)?.Name);
+        Check("side by side is fine", null,
+            DownloadPaths.OverlappingRepo(DownloadPaths.RepoFolder(apart, SampleTree), [emu, nested, apart], apart.Id, SampleTree)?.Name);
+        Check("the same folder is not one inside the other", null,
+            DownloadPaths.OverlappingRepo(DownloadPaths.RepoFolder(apart, SampleTree), [apart, same], apart.Id, SampleTree)?.Name);
+
+        // ----- moves -----
+
+        string from = AppsPath("Folders", "Emu", "Ky");
+        Touch(Path.Combine(from, "ky (v1).zip"));
+        string own = Path.Combine(AppPaths.BaseDir, "OwnFolderTest", "Ky");
+        Require("outside the download folder without a custom folder: refused", RepoFolderMove.Move(from, own) is not null);
+        Check("to a custom folder: moved", null, RepoFolderMove.Move(from, own, anywhere: true));
+        Check("the file there", true, File.Exists(Path.Combine(own, "ky (v1).zip")));
+        RepoFolderMove.RemoveEmptyParents(from, AppsPath("Folders"));
+        Check("the subfolder left empty goes", false, Directory.Exists(AppsPath("Folders", "Emu")));
+        Check("up to the filter's folder, which stays", true, Directory.Exists(AppsPath("Folders")));
+        // To a custom folder on another drive, when the temp folder is on one: copied, then deleted.
+        string otherDrive = Path.Combine(Path.GetTempPath(), "Git-Sync tests", "Own Ky");
+
+        if (!string.Equals(Path.GetPathRoot(otherDrive), Path.GetPathRoot(own), StringComparison.OrdinalIgnoreCase))
+        {
+            if (Directory.Exists(otherDrive))
+            {
+                Directory.Delete(otherDrive, recursive: true);
+            }
+
+            Check("to another drive: moved", null, RepoFolderMove.Move(own, otherDrive, anywhere: true));
+            Check("to another drive: the file there", true, File.Exists(Path.Combine(otherDrive, "ky (v1).zip")));
+            Check("to another drive: nothing left at the old place", false, Directory.Exists(own));
+            Check("and back", null, RepoFolderMove.Move(otherDrive, own, anywhere: true));
+            Check("back: the file there", true, File.Exists(Path.Combine(own, "ky (v1).zip")));
+        }
+
+        Touch(AppsPath("Folders", "Keep", "Ky", "x.txt"));
+        RepoFolderMove.RemoveEmptyParents(AppsPath("Folders", "Keep", "Gone"), AppsPath("Folders"));
+        Check("a folder with something in it stays", true, Directory.Exists(AppsPath("Folders", "Keep")));
+
+        // ----- a repo downloading into its custom folder -----
+
+        Site github = SiteStore.List().First(s => s.Host == "github.com");
+        var custom = new Repo { Name = "Own", SiteId = github.Id, Path = "own/folder", Folder = own };
+        RepoStore.Save(custom);
+        Check("custom folder saved whole", own, RepoStore.Get(custom.Id)!.Folder);
+        string v1 = Path.Combine(own, "ky (v1).zip");
+        RepoStore.SetCurrent(custom.Id, new VersionRef("v1", null, VersionKind.Release), [DownloadPaths.ToRelative(v1)]);
+
+        string v2 = Path.Combine(own, "ky (v2).zip");
+        Touch(v2 + ".part", "v2");
+        List<string> warnings = Downloader.Finish(RepoStore.Get(custom.Id)!, own, [(v2 + ".part", v2)],
+            new VersionRef("v2", null, VersionKind.Release), redownload: false);
+        Check("update in a custom folder: no warnings", 0, warnings.Count);
+        Check("update in a custom folder: the old version's file deleted there", false, File.Exists(v1));
+        Check("update in a custom folder: the new one in place", true, File.Exists(v2));
+
+        // Earlier downloads are not looked for in a custom folder.
+        Touch(Path.Combine(own, "ky (v0).zip"));
+        FileCheck.AdoptDownloads();
+        Check("nothing adopted from a custom folder", 1, RepoStore.Get(custom.Id)!.CurrentFiles.Count);
+
+        // Leaving the download folder's files behind keeps those of a custom folder.
+        string inApps = Touch(AppsPath("Folders", "InApps", "a (v1).zip"));
+        var appsRepo = new Repo { Name = "In Apps", SiteId = github.Id, Path = "own/apps", Folder = "InApps" };
+        RepoStore.Save(appsRepo);
+        RepoStore.SetCurrent(appsRepo.Id, new VersionRef("v1", null, VersionKind.Release), [DownloadPaths.ToRelative(inApps)]);
+        RepoStore.ForgetFilesUnder(AppPaths.AppsDir);
+        Check("left behind: the download folder's files forgotten", 0, RepoStore.Get(appsRepo.Id)!.CurrentFiles.Count);
+        Check("left behind: the custom folder's still recorded", 1, RepoStore.Get(custom.Id)!.CurrentFiles.Count);
+
+        // A custom folder inside a place that moves (a folder of the tree renamed) goes along.
+        string insideApps = AppsPath("Folders", "Tree", "Special");
+        var treeRepo = new Repo { Name = "In tree", SiteId = github.Id, Path = "own/tree", Folder = insideApps };
+        RepoStore.Save(treeRepo);
+        var moves = new PathMoves();
+        moves.Add(AppsPath("Folders", "Tree"), AppsPath("Folders", "Renamed"));
+        RepoStore.ApplyMoves(moves);
+        Check("a custom folder inside a moved folder follows", AppsPath("Folders", "Renamed", "Special"), RepoStore.Get(treeRepo.Id)!.Folder);
+        Check("others' custom folders stay", own, RepoStore.Get(custom.Id)!.Folder);
+
+        // ----- export files -----
+
+        const string head = "\"format\":\"Git-Sync data\",\"version\":1";
+        string file = "{" + head + ",\"filters\":[],\"repos\":["
+            + "{\"name\":\"Sub\",\"site\":\"github.com\",\"api\":\"GitHub\",\"repository\":\"o/sub\",\"folder\":\"Emulators/Ky\"},"
+            + "{\"name\":\"Full\",\"site\":\"github.com\",\"api\":\"GitHub\",\"repository\":\"o/full\",\"folder\":\"D:\\\\Emulators\\\\Full\\\\\"}]}";
+        ExportData read = DataTransfer.Parse(file);
+        Check("imported subfolders saved with \\", @"Emulators\Ky", read.Repos[0].Folder);
+        Check("imported custom folder", @"D:\Emulators\Full", read.Repos[1].Folder);
+
+        try
+        {
+            DataTransfer.Parse(file.Replace("Emulators/Ky", "../Ky", StringComparison.Ordinal));
+            Check("a folder climbing out", "refused", "accepted");
+        }
+        catch (FormatException)
+        {
+            Check("a folder climbing out refused", true, true);
+        }
+
+        foreach (Repo repo in new[] { custom, appsRepo, treeRepo })
+        {
+            RepoStore.Delete(repo.Id);
+        }
+
+        Directory.Delete(Path.Combine(AppPaths.BaseDir, "OwnFolderTest"), recursive: true);
     }
 
     private static void TestOldFolder()

@@ -503,7 +503,7 @@ internal sealed class DataTab : UserControl
                 return false;
             }
 
-            RepoStore.ForgetAllFiles();
+            RepoStore.ForgetFilesUnder(from);
             DownloadRoot.SetCustom(folder);
             ShowResult(Destination(folder) + " The files of the old folder were left there, and forgotten.", Theme.Success);
             return true;

@@ -112,9 +112,127 @@ internal static partial class DownloadPaths
     /// </summary>
     internal static string SafeFileName(string serverName) => SafeName(Path.GetFileName(serverName.Replace('\\', '/')));
 
-    /// <summary>&lt;download folder&gt;\&lt;filter path&gt;\&lt;repo folder&gt;, absolute.</summary>
-    internal static string RepoFolder(Repo repo, IReadOnlyList<FilterFolder> filters) =>
-        TreeFolder(repo.FilterId, repo.Folder, filters);
+    /// <summary>
+    /// &lt;download folder&gt;\&lt;filter path&gt;\&lt;repo folder&gt;, absolute — the repo
+    /// folder may hold subfolders ("Emulators\Ky"). With "Custom folder" the
+    /// Folder is a full path of its own, anywhere, and is used as it is.
+    /// </summary>
+    internal static string RepoFolder(Repo repo, IReadOnlyList<FilterFolder> filters)
+    {
+        if (IsCustomFolder(repo.Folder))
+        {
+            return FullFolder(repo.Folder);
+        }
+
+        var parts = new List<string> { DownloadRoot.Current };
+        parts.AddRange(FilterStore.PathOf(repo.FilterId, filters).Select(SafeName));
+        parts.AddRange(repo.Folder.Split(FolderSeparators).Select(SafeName));
+        return Path.Combine([.. parts]);
+    }
+
+    /// <summary>&lt;download folder&gt;\&lt;filter path&gt;: where the folders of a filter's repos start.</summary>
+    internal static string FilterBase(long? filterId, IReadOnlyList<FilterFolder> filters) =>
+        Path.Combine([DownloadRoot.Current, .. FilterStore.PathOf(filterId, filters).Select(SafeName)]);
+
+    private static readonly char[] FolderSeparators = ['\\', '/'];
+
+    /// <summary>A repo with "Custom folder": its Folder is a full path ("D:\Emulators\Ky").</summary>
+    internal static bool IsCustomFolder(string folder) => Path.IsPathFullyQualified(folder.Trim());
+
+    /// <summary>A full path as saved and compared: no trailing \, except the one of a drive ("D:\").</summary>
+    internal static string FullFolder(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path.Trim()));
+
+    /// <summary>
+    /// The Folder field without "Custom folder": a folder name, or names
+    /// separated by \ or / for subfolders, each one a name Windows takes.
+    /// Nothing empty, no "..", no drive.
+    /// </summary>
+    internal static bool IsValidFolderPath(string folder)
+    {
+        string[] parts = folder.Trim().Split(FolderSeparators);
+        return parts.All(IsValidName);
+    }
+
+    /// <summary>The Folder as saved: "Emulators / Ky" becomes "Emulators\Ky"; a full path is made whole.</summary>
+    internal static string NormalizeFolder(string folder) =>
+        IsCustomFolder(folder)
+            ? FullFolder(folder)
+            : string.Join('\\', folder.Trim().Split(FolderSeparators).Select(p => p.Trim()));
+
+    /// <summary>
+    /// Why a full path cannot be a repo's own folder, or null when it can.
+    /// Its downloads, and with "Move previous versions to a different folder"
+    /// everything else in it, are handled as the repo's: a whole drive, the
+    /// folder that holds Git-Sync, or one that holds the download folder would
+    /// put far more than the repo's files there.
+    /// </summary>
+    internal static string? CustomFolderProblem(string path)
+    {
+        if (!IsCustomFolder(path))
+        {
+            return "Enter a full path, like D:\\Emulators\\Ky, or choose the folder.";
+        }
+
+        string full;
+
+        try
+        {
+            full = FullFolder(path);
+        }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return "That is not a folder path Windows takes.";
+        }
+
+        string root = Path.GetPathRoot(full) ?? string.Empty;
+
+        if (string.Equals(Path.TrimEndingDirectorySeparator(root), full, StringComparison.OrdinalIgnoreCase) || full.Length <= root.Length)
+        {
+            return "Choose a folder, not a whole drive.";
+        }
+
+        if (!full[root.Length..].Split(Path.DirectorySeparatorChar).All(IsValidName))
+        {
+            return "A folder name in that path is not one Windows takes: \\ / : * ? \" < > | or a name ending in a dot.";
+        }
+
+        string own = FullFolder(AppPaths.BaseDir);
+
+        if (string.Equals(full, own, StringComparison.OrdinalIgnoreCase) || DownloadRoot.IsInside(own, full))
+        {
+            return "That folder holds Git-Sync itself. Choose another one.";
+        }
+
+        string downloads = FullFolder(DownloadRoot.Current);
+
+        if (string.Equals(full, downloads, StringComparison.OrdinalIgnoreCase) || DownloadRoot.IsInside(downloads, full))
+        {
+            return "That folder holds the whole download folder. Choose one for this repository alone.";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Another repository whose folder is inside <paramref name="folder"/>, or
+    /// holds it. Two such repos would mix their files: moving one folder, or
+    /// its Old, would carry the other one's along.
+    /// </summary>
+    internal static Repo? OverlappingRepo(string folder, IEnumerable<Repo> repos, long exceptId, IReadOnlyList<FilterFolder> filters)
+    {
+        string mine = FullFolder(folder);
+
+        return repos.FirstOrDefault(r =>
+        {
+            if (r.Id == exceptId)
+            {
+                return false;
+            }
+
+            string theirs = FullFolder(RepoFolder(r, filters));
+            return DownloadRoot.IsInside(theirs, mine) || DownloadRoot.IsInside(mine, theirs);
+        });
+    }
 
     /// <summary>
     /// &lt;download folder&gt;\&lt;path of the parent&gt;\&lt;name&gt;, absolute: a

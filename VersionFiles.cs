@@ -234,10 +234,14 @@ internal static class RepoFolderMove
     /// tell the user when the folder could not be moved, or null when it was
     /// (or did not need to be).
     /// </summary>
-    internal static string? Move(string from, string to)
+    /// <param name="anywhere">
+    /// A repo's own "Custom folder" is on one side: it can be anywhere, so the
+    /// move is not held to the download folder.
+    /// </param>
+    internal static string? Move(string from, string to, bool anywhere = false)
     {
-        from = Path.GetFullPath(from).TrimEnd(Path.DirectorySeparatorChar);
-        to = Path.GetFullPath(to).TrimEnd(Path.DirectorySeparatorChar);
+        from = DownloadPaths.FullFolder(from);
+        to = DownloadPaths.FullFolder(to);
 
         if (string.Equals(from, to, StringComparison.Ordinal) || !Directory.Exists(from))
         {
@@ -246,7 +250,7 @@ internal static class RepoFolderMove
 
         // Paths come from names typed in Edit, never from outside; checked
         // anyway, as every delete is, since a move empties the old place.
-        if (!DownloadPaths.IsInsideDownloads(from) || !DownloadPaths.IsInsideDownloads(to))
+        if (!anywhere && (!DownloadPaths.IsInsideDownloads(from) || !DownloadPaths.IsInsideDownloads(to)))
         {
             return "That folder is outside the download folder, so it was not moved.";
         }
@@ -273,6 +277,25 @@ internal static class RepoFolderMove
                 Directory.CreateDirectory(Path.GetDirectoryName(to)!);
             }
 
+            // A custom folder can be on another drive, where a folder cannot
+            // simply be renamed: copied there, the originals deleted once all
+            // arrived, everything put back if anything fails.
+            if (!string.Equals(Path.GetPathRoot(from), Path.GetPathRoot(to), StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    FolderTransfer.MoveContents(from, to, null);
+                }
+                catch (IOException)
+                {
+                    TryDeleteEmpty(to);
+                    throw;
+                }
+
+                TryDeleteEmpty(from);
+                return null;
+            }
+
             Directory.Move(from, to);
             return null;
         }
@@ -280,6 +303,50 @@ internal static class RepoFolderMove
         {
             return $"Could not move the download folder\n{from}\nto\n{to}\n\n{error.Message}\n\n"
                  + "Close any program that is using it and try again.";
+        }
+    }
+
+    private static void TryDeleteEmpty(string folder)
+    {
+        try
+        {
+            if (Directory.Exists(folder) && !Directory.EnumerateFileSystemEntries(folder).Any())
+            {
+                Directory.Delete(folder);
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            // An empty folder left behind is harmless.
+        }
+    }
+
+    /// <summary>
+    /// After a folder moved out of "Emulators\Ky", an "Emulators" left empty
+    /// goes too — up to <paramref name="stopAt"/>, never past it. Only empty
+    /// folders: anything with something in it stays.
+    /// </summary>
+    internal static void RemoveEmptyParents(string folder, string stopAt)
+    {
+        string stop = DownloadPaths.FullFolder(stopAt);
+
+        for (string? parent = Path.GetDirectoryName(DownloadPaths.FullFolder(folder));
+             parent is not null && DownloadRoot.IsInside(parent, stop);
+             parent = Path.GetDirectoryName(parent))
+        {
+            try
+            {
+                if (!Directory.Exists(parent) || Directory.EnumerateFileSystemEntries(parent).Any())
+                {
+                    return;
+                }
+
+                Directory.Delete(parent);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                return;
+            }
         }
     }
 }

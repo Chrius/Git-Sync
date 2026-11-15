@@ -219,7 +219,10 @@ internal static partial class FileCheck
         foreach (Repo repo in RepoStore.List())
         {
             // Without a current version there is nothing to tell versions by.
-            if (repo.Current is not { } current)
+            // A "Custom folder" came after every download was recorded, and it
+            // can be a folder full of other things (the app's own install):
+            // nothing in it is taken for an earlier download.
+            if (repo.Current is not { } current || DownloadPaths.IsCustomFolder(repo.Folder))
             {
                 continue;
             }
