@@ -18,6 +18,12 @@ folders of your own, and downloads the releases you pick.
 - **Download and Update.** A release with one file downloads straight away; with several,
   you pick which ones, and the next update pre-selects the same files. **Update All** walks
   through every repository with a newer version, one at a time.
+- **Redownload.** Right-click → *Redownload…* lists the files of the version you have again,
+  so a wrong pick can be fixed: tick the right file, untick the wrong one and it is deleted.
+- **Source code too.** Settings → Automation → *Show source code when downloading* lists each
+  release's Source code (zip) and (tar.gz) with its other files.
+- **Automatic checks.** Settings → Automation can check every repository on its own, every
+  30 minutes to 12 hours.
 - **Version in every file name.** Files are saved as `name (build-212).zip`, so builds that
   only differ by a hash can be told apart. The repository's `README.md` is saved beside them.
 - **Keep previous versions** per repository, or let each update replace the old files.

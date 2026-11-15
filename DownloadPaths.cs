@@ -223,11 +223,11 @@ internal static partial class DownloadPaths
     }
 
     /// <summary>
-    /// "&lt;repo&gt;-source.zip". The version is not in it: like every file, it
-    /// gets the version at the end when saved ("rea-source (v1.0).zip").
+    /// "&lt;repo&gt;-source.zip" (or ".tar.gz"). The version is not in it: like
+    /// every file, it gets the version at the end when saved ("rea-source (v1.0).zip").
     /// </summary>
-    internal static string SourceFileName(string repoPath) =>
-        $"{SafeName(RepoAddress.LastSegment(repoPath))}-source.zip";
+    internal static string SourceFileName(string repoPath, string extension = ".zip") =>
+        $"{SafeName(RepoAddress.LastSegment(repoPath))}-source{extension}";
 
     // ---------- matching files across versions ----------
 

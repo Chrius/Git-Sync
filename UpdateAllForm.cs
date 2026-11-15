@@ -197,14 +197,16 @@ internal sealed class UpdateAllForm : Form
             return;
         }
 
-        if (_release.Files.Count == 0)
+        List<ReleaseFile> files = _release.Offered(PreferenceStore.ShowSource());
+
+        if (files.Count == 0)
         {
             Fail(item, "This version has no files to download.");
             return;
         }
 
-        _files.SetFiles(_release.Files, DownloadPaths.PreChecked(
-            _release.Files, _release.ToVersion().DisplayTag, item.Repo.CurrentFiles, item.Repo.Current?.DisplayTag));
+        _files.SetFiles(files, DownloadPaths.PreChecked(
+            files, _release.ToVersion().DisplayTag, item.Repo.CurrentFiles, item.Repo.Current?.DisplayTag));
 
         _ignore.Enabled = true;
         _update.Enabled = _files.CheckedFiles.Count > 0;

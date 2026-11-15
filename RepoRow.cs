@@ -279,7 +279,7 @@ internal sealed class RepoRow : Control
             DrawPill(g, area);
             _tipAreas.Add((area, version.Kind == VersionKind.Commit
                 ? "Source code of the newest commit: this repository has no releases."
-                : "Source code: this release has no files of its own."));
+                : "Source code of this release, not files uploaded to it."));
         }
     }
 

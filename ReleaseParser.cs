@@ -56,7 +56,7 @@ internal static class ReleaseParser
         return Build(tag, Text(e, "name"),
             Date(e, "published_at") ?? Date(e, "created_at"),
             Flag(e, "prerelease"), Flag(e, "draft"),
-            Text(e, "html_url"), files, Text(e, "zipball_url"), repoPath);
+            Text(e, "html_url"), files, Text(e, "zipball_url"), Text(e, "tarball_url"), repoPath);
     }
 
     private static Release ParseGitLab(JsonElement e, string repoPath)
@@ -64,6 +64,7 @@ internal static class ReleaseParser
         string tag = Text(e, "tag_name");
         var files = new List<ReleaseFile>();
         string sourceZip = string.Empty;
+        string sourceTar = string.Empty;
 
         if (e.TryGetProperty("assets", out JsonElement assets) && assets.ValueKind == JsonValueKind.Object)
         {
@@ -77,12 +78,17 @@ internal static class ReleaseParser
                 }
             }
 
+            // GitLab also lists tar.bz2 and tar; only the two formats the other
+            // sites offer are kept, so the choice looks the same everywhere.
             if (assets.TryGetProperty("sources", out JsonElement sources) && sources.ValueKind == JsonValueKind.Array)
             {
-                sourceZip = sources.EnumerateArray()
-                    .Where(s => Text(s, "format") == "zip")
+                string SourceOf(string format) => sources.EnumerateArray()
+                    .Where(s => Text(s, "format") == format)
                     .Select(s => Text(s, "url"))
                     .FirstOrDefault() ?? string.Empty;
+
+                sourceZip = SourceOf("zip");
+                sourceTar = SourceOf("tar.gz");
             }
         }
 
@@ -92,7 +98,7 @@ internal static class ReleaseParser
         return Build(tag, Text(e, "name"),
             Date(e, "released_at") ?? Date(e, "created_at"),
             Flag(e, "upcoming_release"), draft: false,
-            page, files, sourceZip, repoPath);
+            page, files, sourceZip, sourceTar, repoPath);
     }
 
     private static Release ParseGitea(JsonElement e, string repoPath)
@@ -111,19 +117,20 @@ internal static class ReleaseParser
         return Build(tag, Text(e, "name"),
             Date(e, "published_at") ?? Date(e, "created_at"),
             Flag(e, "prerelease"), Flag(e, "draft"),
-            Text(e, "html_url"), files, Text(e, "zipball_url"), repoPath);
+            Text(e, "html_url"), files, Text(e, "zipball_url"), Text(e, "tarball_url"), repoPath);
     }
 
     /// <summary>A release without uploaded files offers its source archive as the single file.</summary>
     private static Release Build(
         string tag, string title, DateTimeOffset? date, bool prerelease, bool draft,
-        string page, List<ReleaseFile> files, string sourceZip, string repoPath)
+        string page, List<ReleaseFile> files, string sourceZip, string sourceTar, string repoPath)
     {
         VersionKind kind = VersionKind.Release;
+        List<ReleaseFile> sources = SourceFiles(repoPath, sourceZip, sourceTar);
 
-        if (files.Count == 0 && sourceZip.Length > 0)
+        if (files.Count == 0 && sources.Count > 0)
         {
-            files.Add(new ReleaseFile(DownloadPaths.SourceFileName(repoPath), -1, sourceZip));
+            files.Add(sources[0]);
             kind = VersionKind.ReleaseSource;
         }
 
@@ -136,8 +143,27 @@ internal static class ReleaseParser
             Draft = draft,
             Kind = kind,
             PageUrl = page,
-            Files = files
+            Files = files,
+            Sources = sources
         };
+    }
+
+    /// <summary>The source archives that have an address, zip first: the zip is the one used when only one is offered.</summary>
+    private static List<ReleaseFile> SourceFiles(string repoPath, string zipUrl, string tarUrl)
+    {
+        var sources = new List<ReleaseFile>();
+
+        if (zipUrl.Length > 0)
+        {
+            sources.Add(new ReleaseFile(DownloadPaths.SourceFileName(repoPath, ".zip"), -1, zipUrl, IsSource: true));
+        }
+
+        if (tarUrl.Length > 0)
+        {
+            sources.Add(new ReleaseFile(DownloadPaths.SourceFileName(repoPath, ".tar.gz"), -1, tarUrl, IsSource: true));
+        }
+
+        return sources;
     }
 
     /// <summary>
@@ -216,9 +242,10 @@ internal static class ReleaseParser
 
     /// <summary>The branch head as a version whose single file is the source archive of that commit.</summary>
     internal static Release SourceHead(
-        string repoPath, string branch, string sha, DateTimeOffset? date, string page, string zipUrl)
+        string repoPath, string branch, string sha, DateTimeOffset? date, string page, string zipUrl, string tarUrl = "")
     {
         string shortSha = sha.Length > 7 ? sha[..7] : sha;
+        List<ReleaseFile> sources = SourceFiles(repoPath, zipUrl, tarUrl);
 
         return new Release
         {
@@ -228,7 +255,8 @@ internal static class ReleaseParser
             Kind = VersionKind.Commit,
             Branch = branch,
             PageUrl = page,
-            Files = [new ReleaseFile(DownloadPaths.SourceFileName(repoPath), -1, zipUrl)]
+            Files = [.. sources.Take(1)],
+            Sources = sources
         };
     }
 

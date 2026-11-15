@@ -564,7 +564,11 @@ internal sealed class MainForm : Form
     /// Update / Download of one row: fetches the target version again, asks
     /// which files when there is more than one, and downloads them.
     /// </summary>
-    private async void DownloadRepo(Repo listed)
+    /// <param name="redownload">
+    /// "Redownload…" on the right-click menu: the Current version instead of
+    /// the target, and the file picker always, with what is on disk ticked.
+    /// </param>
+    private async void DownloadRepo(Repo listed, bool redownload = false)
     {
         if (_downloads.ContainsKey(listed.Id))
         {
@@ -574,7 +578,7 @@ internal sealed class MainForm : Form
         // Read again: Current, its files and the pin may be newer than the row.
         Repo repo = RepoStore.Get(listed.Id) ?? listed;
         Site? site = SiteOf(repo);
-        VersionRef? target = VersionState.Target(repo);
+        VersionRef? target = redownload ? repo.Current : VersionState.Target(repo);
 
         if (site is null || target is null)
         {
@@ -592,20 +596,29 @@ internal sealed class MainForm : Form
         {
             Release release = await ApiClient.GetReleaseAsync(site, repo, target, _closing.Token);
 
-            if (release.Files.Count == 0)
+            string tag = release.ToVersion().DisplayTag;
+
+            // A redownload offers whatever is on disk, even a source archive
+            // picked while "Show source code" was on and since switched off.
+            bool showSource = PreferenceStore.ShowSource()
+                || (redownload && DownloadPaths.PreChecked(release.Sources, tag, repo.CurrentFiles, repo.Current?.DisplayTag).Count > 0);
+
+            List<ReleaseFile> files = release.Offered(showSource);
+
+            if (files.Count == 0)
             {
                 Warn($"{repo.Name}: this version has no files to download.");
                 return;
             }
 
-            List<ReleaseFile> chosen = release.Files;
+            List<ReleaseFile> chosen = files;
 
-            if (release.Files.Count > 1)
+            if (files.Count > 1 || redownload)
             {
                 HashSet<string> preChecked = DownloadPaths.PreChecked(
-                    release.Files, release.ToVersion().DisplayTag, repo.CurrentFiles, repo.Current?.DisplayTag);
+                    files, tag, repo.CurrentFiles, repo.Current?.DisplayTag);
 
-                using var picker = new FilePickerForm(repo, release, preChecked);
+                using var picker = new FilePickerForm(repo, release, files, preChecked, redownload);
 
                 if (picker.ShowDialog(this) != DialogResult.OK || picker.Chosen.Count == 0)
                 {
@@ -624,7 +637,7 @@ internal sealed class MainForm : Form
             });
 
             DownloadOutcome outcome = await Downloader.DownloadAsync(
-                site, repo, _filters, release, chosen, progress, _closing.Token);
+                site, repo, _filters, release, chosen, progress, _closing.Token, redownload);
 
             if (outcome.Warnings.Count > 0)
             {
@@ -632,7 +645,7 @@ internal sealed class MainForm : Form
             }
             else
             {
-                SetStatus($"{repo.Name}: {release.ToVersion().DisplayTag} downloaded "
+                SetStatus($"{repo.Name}: {tag} downloaded {(redownload ? "again " : "")}"
                           + (chosen.Count == 1 ? "(1 file)." : $"({chosen.Count} files)."), Theme.DimText);
             }
         }
@@ -812,7 +825,10 @@ internal sealed class MainForm : Form
             edit: () => EditRepo(repo),
             delete: () => DeleteRepo(repo),
             openFolder: () => OpenFolder(repo),
-            openPage: () => OpenPage(repo));
+            openPage: () => OpenPage(repo),
+            redownload: repo.Current is null || _downloads.ContainsKey(repo.Id)
+                ? null
+                : () => DownloadRepo(repo, redownload: true));
 
         menu.VersionPicked += (release, isLatest) =>
         {

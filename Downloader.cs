@@ -24,9 +24,11 @@ internal static class Downloader
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(60);
 
+    /// <param name="redownload">The Current version again, with the files picked anew (see <see cref="KeepAs"/>).</param>
     internal static async Task<DownloadOutcome> DownloadAsync(
         Site site, Repo repo, IReadOnlyList<FilterFolder> filters, Release release,
-        IReadOnlyList<ReleaseFile> files, IProgress<DownloadProgress>? progress, CancellationToken cancel)
+        IReadOnlyList<ReleaseFile> files, IProgress<DownloadProgress>? progress, CancellationToken cancel,
+        bool redownload = false)
     {
         string folder = DownloadPaths.RepoFolder(repo, filters);
 
@@ -63,11 +65,10 @@ internal static class Downloader
             throw;
         }
 
-        string? keepAs = repo.KeepPrevious ? repo.Current?.DisplayTag ?? "previous" : null;
-        List<string> warnings = Commit(pending, repo.CurrentFiles, keepAs);
+        List<string> warnings = Commit(pending, repo.CurrentFiles, KeepAs(repo, redownload));
         List<string> saved = [.. pending.Select(p => DownloadPaths.ToRelative(p.Final))];
 
-        RepoStore.SetCurrent(repo.Id, release.ToVersion(), saved);
+        RepoStore.SetCurrent(repo.Id, DownloadedVersion(release, files), saved);
 
         if (await SaveReadmeAsync(site, repo, folder, release.Tag, cancel) is { } readmeProblem)
         {
@@ -75,6 +76,31 @@ internal static class Downloader
         }
 
         return new DownloadOutcome(saved, warnings);
+    }
+
+    /// <summary>
+    /// What <see cref="Commit"/> does with the files on disk: null replaces
+    /// them, a tag keeps them under that tag. "Keep previous versions" keeps
+    /// earlier versions only. A redownload is the same version picked again,
+    /// so its old files are replaced even then — kept, a file chosen by mistake
+    /// would stay in the folder for good, renamed "(tag, 2)".
+    /// </summary>
+    internal static string? KeepAs(Repo repo, bool redownload) =>
+        repo.KeepPrevious && !redownload ? repo.Current?.DisplayTag ?? "previous" : null;
+
+    /// <summary>
+    /// The version to record as Current. Picking only the source archives of a
+    /// release that has files of its own (possible with "Show source code")
+    /// leaves the source on disk, not the release, so Current gets the SOURCE
+    /// mark. It is still the same version: no update is offered for it.
+    /// </summary>
+    internal static VersionRef DownloadedVersion(Release release, IReadOnlyList<ReleaseFile> files)
+    {
+        VersionRef version = release.ToVersion();
+
+        return version.Kind == VersionKind.Release && files.Count > 0 && files.All(f => f.IsSource)
+            ? version with { Kind = VersionKind.ReleaseSource }
+            : version;
     }
 
     /// <summary>
@@ -233,7 +259,7 @@ internal static class Downloader
             {
                 if (!response.IsSuccessStatusCode)
                 {
-                    throw new ApiException($"{file.Name}: {ApiClient.Describe(site, response)}");
+                    throw new ApiException(FailureText(site, file, response));
                 }
 
                 long total = response.Content.Headers.ContentLength ?? (file.Size > 0 ? file.Size : -1);
@@ -305,6 +331,18 @@ internal static class Downloader
             throw new ApiException($"{file.Name}: {error.Message}");
         }
     }
+
+    /// <summary>
+    /// Why a file could not be downloaded. A server can switch source downloads
+    /// off (Forgejo's DISABLE_DOWNLOAD_SOURCE_ARCHIVES, as git.magicbean.dev
+    /// does) while its API still lists the archive addresses, and nothing in
+    /// the API tells: the archive only fails with 404 when fetched, and the
+    /// usual "check the repository name" would send the user the wrong way.
+    /// </summary>
+    internal static string FailureText(Site site, ReleaseFile file, HttpResponseMessage response) =>
+        file.IsSource && response.StatusCode == System.Net.HttpStatusCode.NotFound
+            ? $"{file.Name}: this server does not offer source code downloads (404)."
+            : $"{file.Name}: {ApiClient.Describe(site, response)}";
 
     private static void TryDelete(string path)
     {

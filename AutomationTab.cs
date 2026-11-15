@@ -5,9 +5,10 @@ using System.Windows.Forms;
 namespace GitSync;
 
 /// <summary>
-/// "Automation" tab: checking every repository by itself on a schedule.
-/// Saved as soon as it changes, like the Filters tab; the main window picks
-/// the new settings up when Settings closes.
+/// "Automation" tab: checking every repository by itself on a schedule, and
+/// whether downloads offer the source archives. Saved as soon as it changes,
+/// like the Filters tab; the main window picks the new settings up when
+/// Settings closes.
 /// </summary>
 internal sealed class AutomationTab : UserControl
 {
@@ -21,6 +22,9 @@ internal sealed class AutomationTab : UserControl
     private readonly ComboBox _interval;
     private readonly Label _hint;
     private readonly Label _last;
+    private readonly Panel _separator;
+    private readonly CheckBox _showSource;
+    private readonly Label _sourceHint;
 
     /// <summary>True while the screen fills itself, so it is not taken for user changes.</summary>
     private bool _filling;
@@ -60,8 +64,7 @@ internal sealed class AutomationTab : UserControl
             ForeColor = Theme.DimText,
             Location = new Point(0, TopHint),
             Text = "Every repository is checked, counting from the last time all of them were "
-                 + "checked — by hand or automatically. A check that falls due while a window such "
-                 + "as this one is open waits for it to close.\n\n"
+                 + "checked — by hand or automatically.\n\n"
                  + "Without a GitHub token, GitHub allows 60 requests per hour: a long list checked "
                  + "every 30 minutes can run out. A token in the Sites tab raises that to 5,000."
         };
@@ -69,6 +72,34 @@ internal sealed class AutomationTab : UserControl
 
         _last = new Label { AutoSize = false, ForeColor = Theme.DimText };
         Controls.Add(_last);
+
+        _separator = new Panel { BackColor = Theme.Separator, Height = 1 };
+        Controls.Add(_separator);
+
+        _showSource = new CheckBox
+        {
+            Text = "Show source code when downloading",
+            AutoSize = true,
+            TabIndex = 2
+        };
+        _showSource.CheckedChanged += (_, _) =>
+        {
+            if (!_filling)
+            {
+                PreferenceStore.SetShowSource(_showSource.Checked);
+            }
+        };
+        Controls.Add(_showSource);
+
+        _sourceHint = new Label
+        {
+            AutoSize = false,
+            ForeColor = Theme.DimText,
+            Text = "Lists the Source code (zip) and Source code (tar.gz) of a release with its "
+                 + "other files, so they can be downloaded too. When off, only a release with no "
+                 + "files of its own offers its source, as a zip."
+        };
+        Controls.Add(_sourceHint);
 
         Fill();
     }
@@ -86,9 +117,20 @@ internal sealed class AutomationTab : UserControl
         }
 
         _interval.SetBounds(_everyLabel.Right + 8, TopInterval, 180, _interval.Height);
-        _hint.SetBounds(0, TopHint, width, 110);
-        _last.SetBounds(0, TopHint + 120, width, 40);
+
+        // Heights measured from the text at this width, so a wrapped line never
+        // runs into what follows it.
+        _hint.SetBounds(0, TopHint, width, TextHeight(_hint, width));
+        _last.SetBounds(0, _hint.Bottom + 14, width, 2 * _last.Font.Height + 4);
+
+        _separator.SetBounds(0, _last.Bottom + 14, width, 1);
+        _showSource.Location = new Point(0, _separator.Bottom + 16);
+        _sourceHint.SetBounds(Indent, _showSource.Bottom + 6, width - Indent, TextHeight(_sourceHint, width - Indent));
     }
+
+    private static int TextHeight(Label label, int width) =>
+        TextRenderer.MeasureText(label.Text, label.Font, new Size(width, int.MaxValue),
+            TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height + 4;
 
     private void Fill()
     {
@@ -97,6 +139,7 @@ internal sealed class AutomationTab : UserControl
         _filling = true;
         _enabled.Checked = settings.Enabled;
         _interval.SelectedIndex = Array.FindIndex(AutoCheck.Intervals, i => i.Minutes == settings.Minutes);
+        _showSource.Checked = PreferenceStore.ShowSource();
         _filling = false;
 
         ShowInterval(settings.Enabled);

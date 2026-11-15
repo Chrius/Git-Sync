@@ -91,6 +91,13 @@ internal static class ApiUrls
         _ => $"{RepoRoot(site, path)}/zipball/{Uri.EscapeDataString(sha)}"
     };
 
+    internal static string SourceTarGz(Site site, string path, string sha) => site.Type switch
+    {
+        ApiType.GitLab => $"{RepoRoot(site, path)}/repository/archive.tar.gz?sha={Uri.EscapeDataString(sha)}",
+        ApiType.Gitea => $"{RepoRoot(site, path)}/archive/{Uri.EscapeDataString(sha)}.tar.gz",
+        _ => $"{RepoRoot(site, path)}/tarball/{Uri.EscapeDataString(sha)}"
+    };
+
     /// <summary>The releases page in the browser.</summary>
     internal static string ReleasesPage(Site site, string path) => site.Type == ApiType.GitLab
         ? $"{WebRoot(site)}/{path}/-/releases"
@@ -319,7 +326,8 @@ internal static class ApiClient
         var head = Parse(() => ReleaseParser.ParseHeadCommit(site.Type, commitJson));
 
         return head is { } h
-            ? ReleaseParser.SourceHead(repo.Path, branch, h.Sha, h.Date, h.Page, ApiUrls.SourceZip(site, repo.Path, h.Sha))
+            ? ReleaseParser.SourceHead(repo.Path, branch, h.Sha, h.Date, h.Page,
+                ApiUrls.SourceZip(site, repo.Path, h.Sha), ApiUrls.SourceTarGz(site, repo.Path, h.Sha))
             : null;
     }
 
@@ -450,7 +458,7 @@ internal static class ApiClient
         {
             return ReleaseParser.SourceHead(
                 repo.Path, string.Empty, version.Tag, version.Date, string.Empty,
-                ApiUrls.SourceZip(site, repo.Path, version.Tag));
+                ApiUrls.SourceZip(site, repo.Path, version.Tag), ApiUrls.SourceTarGz(site, repo.Path, version.Tag));
         }
 
         string? json = await GetJsonAsync(site, ApiUrls.ReleaseByTag(site, repo.Path, version.Tag), cancel, missingIsNull: true)

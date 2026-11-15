@@ -10,6 +10,13 @@ internal static class PreferenceStore
 {
     internal const string OrderKey = "ListOrder";
 
+    private const string ShowSourceKey = "ShowSourceCode";
+
+    /// <summary>"Show source code when downloading" (Automation tab). Off until it is ticked.</summary>
+    internal static bool ShowSource() => Get(ShowSourceKey) == "1";
+
+    internal static void SetShowSource(bool show) => Set(ShowSourceKey, show ? "1" : "0");
+
     internal static string? Get(string key)
     {
         using SqliteConnection connection = Database.Open();

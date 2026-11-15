@@ -13,8 +13,12 @@ internal sealed class FileChecklist : UserControl
 {
     private sealed record Entry(ReleaseFile File)
     {
+        // Source archives are generated on request and have no size; the note
+        // says what they are, since their name is Git-Sync's, not the site's.
         public override string ToString() =>
-            File.Size > 0 ? $"{File.Name}    ({FormatSize(File.Size)})" : File.Name;
+            File.Size > 0 ? $"{File.Name}    ({FormatSize(File.Size)})"
+            : File.IsSource ? $"{File.Name}    (source code)"
+            : File.Name;
     }
 
     private readonly Panel _frame;
@@ -174,7 +178,9 @@ internal sealed class FilePickerForm : Form
 
     internal List<ReleaseFile> Chosen { get; private set; } = [];
 
-    internal FilePickerForm(Repo repo, Release release, ISet<string> preChecked)
+    /// <param name="redownload">The files of the version already on disk: unticked ones will be deleted, and the heading says so.</param>
+    internal FilePickerForm(
+        Repo repo, Release release, IReadOnlyList<ReleaseFile> files, ISet<string> preChecked, bool redownload = false)
     {
         Text = "Choose Files";
         ShowIcon = false;
@@ -193,7 +199,9 @@ internal sealed class FilePickerForm : Form
 
         var heading = new Label
         {
-            Text = $"{repo.Name} — {version}\nChoose the files to download:",
+            Text = redownload
+                ? $"{repo.Name} — {version}\nChoose the files to download again. Unticked files are deleted."
+                : $"{repo.Name} — {version}\nChoose the files to download:",
             Location = new Point(16, 12),
             AutoSize = true,
             ForeColor = Theme.Text
@@ -232,6 +240,6 @@ internal sealed class FilePickerForm : Form
         CancelButton = cancel;
 
         _files.SelectionChanged += (_, _) => _download.Enabled = _files.CheckedFiles.Count > 0;
-        _files.SetFiles(release.Files, preChecked);
+        _files.SetFiles(files, preChecked);
     }
 }

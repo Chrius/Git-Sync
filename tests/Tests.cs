@@ -403,6 +403,7 @@ internal static class Tests
           {"tag_name":"v1.4.0","name":"1.4","draft":false,"prerelease":false,
            "published_at":"2026-11-01T12:00:00Z","html_url":"https://github.com/o/r/releases/tag/v1.4.0",
            "zipball_url":"https://api.github.com/repos/o/r/zipball/v1.4.0",
+           "tarball_url":"https://api.github.com/repos/o/r/tarball/v1.4.0",
            "assets":[{"name":"app-v1.4.0-win64.zip","size":2048,
                       "url":"https://api.github.com/repos/o/r/releases/assets/1",
                       "browser_download_url":"https://github.com/o/r/releases/download/v1.4.0/app-v1.4.0-win64.zip"},
@@ -411,6 +412,7 @@ internal static class Tests
                       "browser_download_url":"https://github.com/o/r/releases/download/v1.4.0/app-v1.4.0-linux.tar.gz"}]},
           {"tag_name":"v1.3.0","name":"Source only","draft":false,"prerelease":false,
            "published_at":"2026-10-01T12:00:00Z","zipball_url":"https://api.github.com/repos/o/r/zipball/v1.3.0",
+           "tarball_url":"https://api.github.com/repos/o/r/tarball/v1.3.0",
            "assets":[]}
         ]
         """;
@@ -438,6 +440,23 @@ internal static class Tests
         Check("no files -> source", VersionKind.ReleaseSource, source.Kind);
         Check("source file name", "r-source.zip", source.Files.Single().Name);
         Check("source address", "https://api.github.com/repos/o/r/zipball/v1.3.0", source.Files.Single().Url);
+        Check("source file is marked as source", true, source.Files.Single().IsSource);
+
+        // ----- "Show source code when downloading" -----
+
+        Check("release files are not source", false, v14.Files.Any(f => f.IsSource));
+        Check("archives of a release with files", "r-source.zip|r-source.tar.gz", string.Join("|", v14.Sources.Select(f => f.Name)));
+        Check("tar.gz address", "https://api.github.com/repos/o/r/tarball/v1.4.0", v14.Sources[1].Url);
+        Check("archives have no size", -1L, v14.Sources[1].Size);
+        Check("setting off: only the release files", "app-v1.4.0-win64.zip|app-v1.4.0-linux.tar.gz",
+            string.Join("|", v14.Offered(false).Select(f => f.Name)));
+        Check("setting on: release files, then zip and tar.gz",
+            "app-v1.4.0-win64.zip|app-v1.4.0-linux.tar.gz|r-source.zip|r-source.tar.gz",
+            string.Join("|", v14.Offered(true).Select(f => f.Name)));
+        Check("setting off, no files: the zip alone", "r-source.zip", string.Join("|", source.Offered(false).Select(f => f.Name)));
+        Check("setting on, no files: zip and tar.gz, once each", "r-source.zip|r-source.tar.gz",
+            string.Join("|", source.Offered(true).Select(f => f.Name)));
+        Check("pre-release without tarball_url: zip only", "r-source.zip", string.Join("|", list[0].Offered(true).Where(f => f.IsSource).Select(f => f.Name)));
     }
 
     private static void TestGitLabParsing()
@@ -450,7 +469,9 @@ internal static class Tests
                "_links":{"self":"https://gitlab.com/g/s/p/-/releases/v3.1"},
                "assets":{"count":5,
                  "sources":[{"format":"zip","url":"https://gitlab.com/g/s/p/-/archive/v3.1/p-v3.1.zip"},
-                            {"format":"tar.gz","url":"https://gitlab.com/g/s/p/-/archive/v3.1/p-v3.1.tar.gz"}],
+                            {"format":"tar.gz","url":"https://gitlab.com/g/s/p/-/archive/v3.1/p-v3.1.tar.gz"},
+                            {"format":"tar.bz2","url":"https://gitlab.com/g/s/p/-/archive/v3.1/p-v3.1.tar.bz2"},
+                            {"format":"tar","url":"https://gitlab.com/g/s/p/-/archive/v3.1/p-v3.1.tar"}],
                  "links":[{"id":1,"name":"p-win.exe","url":"https://example.com/page",
                            "direct_asset_url":"https://gitlab.com/g/s/p/-/releases/v3.1/downloads/p-win.exe",
                            "link_type":"package"}]}},
@@ -471,6 +492,12 @@ internal static class Tests
         Check("no links -> source", VersionKind.ReleaseSource, list[1].Kind);
         Check("zip source chosen", "https://gitlab.com/g/s/p/-/archive/v3.0/p-v3.0.zip", list[1].Files.Single().Url);
         Check("source file name", "p-source.zip", list[1].Files.Single().Name);
+
+        Check("only zip and tar.gz of GitLab's four formats", "p-source.zip|p-source.tar.gz",
+            string.Join("|", list[0].Sources.Select(f => f.Name)));
+        Check("GitLab tar.gz address", "https://gitlab.com/g/s/p/-/archive/v3.1/p-v3.1.tar.gz", list[0].Sources[1].Url);
+        Check("setting on: link, then the archives", "p-win.exe|p-source.zip|p-source.tar.gz",
+            string.Join("|", list[0].Offered(true).Select(f => f.Name)));
     }
 
     private static void TestGiteaParsing()
@@ -481,6 +508,7 @@ internal static class Tests
             [{"tag_name":"v9.0.1","name":"9.0.1","draft":false,"prerelease":false,
               "published_at":"2026-11-02T00:00:00+01:00","html_url":"https://codeberg.org/o/r/releases/tag/v9.0.1",
               "zipball_url":"https://codeberg.org/o/r/archive/v9.0.1.zip",
+              "tarball_url":"https://codeberg.org/o/r/archive/v9.0.1.tar.gz",
               "assets":[{"name":"r-9.0.1.tar.xz","size":4096,
                          "browser_download_url":"https://codeberg.org/o/r/releases/download/v9.0.1/r-9.0.1.tar.xz"}]}]
             """;
@@ -491,8 +519,10 @@ internal static class Tests
         Check("file", "r-9.0.1.tar.xz", release.Files.Single().Name);
         Check("size", 4096L, release.Files.Single().Size);
         Check("kind", VersionKind.Release, release.Kind);
+        Check("Gitea archives", "https://codeberg.org/o/r/archive/v9.0.1.zip|https://codeberg.org/o/r/archive/v9.0.1.tar.gz",
+            string.Join("|", release.Sources.Select(f => f.Url)));
 
-        const string single = """{"tag_name":"v1","assets":[],"zipball_url":"https://codeberg.org/o/r/archive/v1.zip","published_at":"2026-01-01T00:00:00Z"}""";
+        const string single ="""{"tag_name":"v1","assets":[],"zipball_url":"https://codeberg.org/o/r/archive/v1.zip","published_at":"2026-01-01T00:00:00Z"}""";
         Release one = ReleaseParser.ParseSingle(ApiType.Gitea, single, "o/r");
         Check("single release source", VersionKind.ReleaseSource, one.Kind);
     }
@@ -551,6 +581,36 @@ internal static class Tests
         Check("archive address", $"https://api.github.com/repos/morluto/rea/zipball/{sha}", head.Files.Single().Url);
         Check("short tag on screen", "0123456", head.ToVersion().DisplayTag);
         Check("source flag", true, head.ToVersion().IsSource);
+        Check("no tar.gz address given: zip only, even with the setting on", "rea-source.zip",
+            string.Join("|", head.Offered(true).Select(f => f.Name)));
+
+        Release both = ReleaseParser.SourceHead("morluto/rea", "main", sha, gh?.Date, "",
+            ApiUrls.SourceZip(github, "morluto/rea", sha), ApiUrls.SourceTarGz(github, "morluto/rea", sha));
+        Check("commit, setting off: zip", "rea-source.zip", string.Join("|", both.Offered(false).Select(f => f.Name)));
+        Check("commit, setting on: zip and tar.gz", "rea-source.zip|rea-source.tar.gz",
+            string.Join("|", both.Offered(true).Select(f => f.Name)));
+        Check("commit tar.gz address", $"https://api.github.com/repos/morluto/rea/tarball/{sha}", both.Sources[1].Url);
+        Check("tar.gz saved with the version before the double extension", "rea-source (0123456).tar.gz",
+            DownloadPaths.LabeledName(both.Sources[1].Name, both.ToVersion().DisplayTag));
+
+        // What Current becomes after a download.
+        Release withFiles = ReleaseParser.ParseList(ApiType.GitHub, GitHubList, "o/r")[2];
+        Check("release files -> release", VersionKind.Release,
+            Downloader.DownloadedVersion(withFiles, [withFiles.Files[0]]).Kind);
+        Check("release files and source -> release", VersionKind.Release,
+            Downloader.DownloadedVersion(withFiles, withFiles.Offered(true)).Kind);
+        Check("only the source of a release with files -> marked source", VersionKind.ReleaseSource,
+            Downloader.DownloadedVersion(withFiles, withFiles.Sources).Kind);
+        Check("marked source, still the same version", true,
+            VersionState.SameVersion(withFiles.ToVersion(), Downloader.DownloadedVersion(withFiles, withFiles.Sources)));
+        Check("commit stays a commit", VersionKind.Commit, Downloader.DownloadedVersion(both, both.Sources).Kind);
+
+        // The next update pre-checks the same kind of archive as last time, and not the other one.
+        List<ReleaseFile> offered = withFiles.Offered(true);
+        HashSet<string> again = DownloadPaths.PreChecked(offered, "v1.4.0",
+            [@"Apps\X\app-v1.3.0-win64 (v1.3.0).zip", @"Apps\X\r-source (v1.3.0).tar.gz"], "v1.3.0");
+        Check("last time's file and tar.gz pre-checked", "app-v1.4.0-win64.zip|r-source.tar.gz",
+            string.Join("|", offered.Where(f => again.Contains(f.Name)).Select(f => f.Name)));
     }
 
     private static void TestApiUrls()
@@ -588,6 +648,10 @@ internal static class Tests
         Check("GitLab archive", "https://gitlab.com/api/v4/projects/g%2Fp/repository/archive.zip?sha=abc",
             ApiUrls.SourceZip(gitlab, "g/p", "abc"));
         Check("Gitea archive", "https://codeberg.org/api/v1/repos/o/r/archive/abc.zip", ApiUrls.SourceZip(codeberg, "o/r", "abc"));
+        Check("GitLab tar.gz", "https://gitlab.com/api/v4/projects/g%2Fp/repository/archive.tar.gz?sha=abc",
+            ApiUrls.SourceTarGz(gitlab, "g/p", "abc"));
+        Check("Gitea tar.gz", "https://codeberg.org/api/v1/repos/o/r/archive/abc.tar.gz", ApiUrls.SourceTarGz(codeberg, "o/r", "abc"));
+        Check("GitHub tar.gz", "https://api.github.com/repos/o/r/tarball/abc", ApiUrls.SourceTarGz(github, "o/r", "abc"));
 
         Check("GitLab releases page", "https://gitlab.com/g/s/p/-/releases", ApiUrls.ReleasesPage(gitlab, "g/s/p"));
         Check("GitHub releases page", "https://github.com/o/r/releases", ApiUrls.ReleasesPage(github, "o/r"));
@@ -869,6 +933,13 @@ internal static class Tests
 
         string folder = Path.Combine(AppPaths.AppsDir, "KeepTest");
         Directory.CreateDirectory(folder);
+
+        var keeper = new Repo { KeepPrevious = true, Current = new VersionRef("v1.3.0", null, VersionKind.Release) };
+        Check("update keeps the old version under its tag", "v1.3.0", Downloader.KeepAs(keeper, redownload: false));
+        Check("redownload of the same version replaces its files", null, Downloader.KeepAs(keeper, redownload: true));
+        Check("nothing kept without the option", null,
+            Downloader.KeepAs(new Repo { Current = keeper.Current }, redownload: false));
+        Check("kept before anything was current", "previous", Downloader.KeepAs(new Repo { KeepPrevious = true }, redownload: false));
 
         Check("same name gets the old version", Path.Combine(folder, "app-win64 (v1.3.0).zip"),
             DownloadPaths.KeptName(Path.Combine(folder, "app-win64.zip"), "v1.3.0"));
@@ -1157,9 +1228,43 @@ internal static class Tests
 
         AutoCheck.SetEnabled(false);
         Check("switched off again", false, AutoCheck.Load().Enabled);
+
+        // ----- "Show source code when downloading" -----
+
+        Check("show source code: off by default", false, PreferenceStore.ShowSource());
+        PreferenceStore.SetShowSource(true);
+        Check("show source code: on", true, PreferenceStore.ShowSource());
+        PreferenceStore.SetShowSource(false);
+        Check("show source code: off again", false, PreferenceStore.ShowSource());
     }
 
     // ---------- live APIs ----------
+
+    /// <summary>The first two bytes of a download in hex, or the HTTP status when it fails.</summary>
+    private static async Task<string> FirstBytes(Site site, string url)
+    {
+        // Sites build source archives on request; a big repo can take a while.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+
+        try
+        {
+            using HttpResponseMessage response = await ApiClient.SendAsync(site, url, "*/*", timeout.Token);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return $"HTTP {(int)response.StatusCode}";
+            }
+
+            await using Stream stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+            byte[] start = new byte[2];
+            await stream.ReadExactlyAsync(start, timeout.Token);
+            return Convert.ToHexString(start);
+        }
+        catch (OperationCanceledException)
+        {
+            return "no answer in 120 s";
+        }
+    }
 
     private static async Task TestOnline()
     {
@@ -1184,7 +1289,7 @@ internal static class Tests
             Require("wrong token reported: " + error.Message, error.Message.Contains("401", StringComparison.Ordinal));
         }
 
-        async Task Releases(Site site, string path)
+        async Task Releases(Site site, string path, bool archivesDisabled = false)
         {
             var repo = new Repo { Path = path };
 
@@ -1207,6 +1312,45 @@ internal static class Tests
                     byte[]? readme = await ApiClient.GetReadmeAsync(site, repo, latest.Tag);
                     Require($"{site.Host} {path}: README.md at that version", readme is { Length: > 0 });
                     Console.WriteLine($"       README.md: {readme?.Length ?? 0} bytes");
+
+                    // "Show source code": both archive addresses work. Only the
+                    // first bytes are read — enough to tell a zip ("PK") from a
+                    // gzip (1F 8B), and to catch a .tar.gz unpacked on the way.
+                    Check($"{site.Host} {path}: zip and tar.gz offered",
+                        $"{RepoAddress.LastSegment(path)}-source.zip|{RepoAddress.LastSegment(path)}-source.tar.gz",
+                        string.Join("|", again.Sources.Select(f => f.Name)));
+
+                    // A server with source downloads switched off still lists
+                    // the addresses, and they answer 404.
+                    foreach (ReleaseFile archive in again.Sources)
+                    {
+                        Check($"{site.Host} {path}: {archive.Name} answers",
+                            archivesDisabled ? "HTTP 404"
+                            : archive.Name.EndsWith(".zip", StringComparison.Ordinal) ? "504B" : "1F8B",
+                            await FirstBytes(site, archive.Url));
+                    }
+
+                    if (archivesDisabled)
+                    {
+                        var saved = new Repo { Name = path, SiteId = site.Id, Path = path, Folder = "NoArchives" };
+                        saved.Id = RepoStore.Save(saved);
+
+                        try
+                        {
+                            await Downloader.DownloadAsync(site, saved, [], again, again.Sources, null, CancellationToken.None);
+                            Check($"{site.Host} {path}: archive download", "refused", "saved");
+                        }
+                        catch (ApiException error)
+                        {
+                            Check($"{site.Host} {path}: why the archive failed",
+                                $"{again.Sources[0].Name}: this server does not offer source code downloads (404).", error.Message);
+                        }
+
+                        string folder = DownloadPaths.RepoFolder(saved, []);
+                        Check($"{site.Host} {path}: nothing left behind", 0,
+                            Directory.Exists(folder) ? Directory.GetFiles(folder).Length : 0);
+                        Check($"{site.Host} {path}: Current unchanged", null, RepoStore.Get(saved.Id)?.Current);
+                    }
                 }
             }
             catch (ApiException error)
@@ -1238,8 +1382,10 @@ internal static class Tests
         await Detect("gitlab.com", ApiType.GitLab);
         await Detect("example.com", null);
 
-        // Longshot on its own Forgejo, read with the Codeberg code.
-        await Releases(new Site { Host = "git.magicbean.dev", Type = ApiType.Gitea }, "MagicBeanDev/Longshot");
+        // Longshot on its own Forgejo, read with the Codeberg code. That server
+        // has source downloads switched off.
+        Site magicbean = SiteStore.Add("git.magicbean.dev", ApiType.Gitea);
+        await Releases(magicbean, "MagicBeanDev/Longshot", archivesDisabled: true);
 
         // Requests left, as the Sites tab asks for them.
         foreach (Site site in new[] { github, gitlab, codeberg })
@@ -1298,6 +1444,36 @@ internal static class Tests
                 // Hello-World's README is a plain "README", not a README.md: nothing saved.
                 Check("no README.md when the repo has none", false,
                     File.Exists(Path.Combine(Path.GetDirectoryName(saved)!, "README.md")));
+
+                // With "Show source code" on, a commit offers both archives;
+                // downloading both replaces the zip alone.
+                string shortSha = head.Tag[..7];
+                DownloadOutcome archives = await Downloader.DownloadAsync(
+                    github, RepoStore.Get(hello.Id)!, [], head, head.Offered(true), null, CancellationToken.None);
+                Check("zip and tar.gz saved", $"Hello-World-source ({shortSha}).zip|Hello-World-source ({shortSha}).tar.gz",
+                    string.Join("|", archives.Files.Select(Path.GetFileName)));
+
+                byte[] gzip = new byte[2];
+                using (FileStream file = File.OpenRead(DownloadPaths.ToAbsolute(archives.Files[1])))
+                {
+                    file.ReadExactly(gzip);
+                }
+
+                Check("saved tar.gz is still gzip", "1F8B", Convert.ToHexString(gzip));
+                Check("Current is the commit", VersionKind.Commit, RepoStore.Get(hello.Id)?.Current?.Kind);
+
+                // "Redownload…" with only the zip ticked: the tar.gz goes, and
+                // nothing is renamed "(tag, 2)" even with "Keep previous versions" on.
+                Repo keeping = RepoStore.Get(hello.Id)!;
+                keeping.KeepPrevious = true;
+                RepoStore.Save(keeping);
+
+                DownloadOutcome redone = await Downloader.DownloadAsync(
+                    github, RepoStore.Get(hello.Id)!, [], head, [head.Sources[0]], null, CancellationToken.None, redownload: true);
+                string helloFolder = Path.GetDirectoryName(DownloadPaths.ToAbsolute(redone.Files.Single()))!;
+                Check("redownload: only the ticked file is left", $"Hello-World-source ({shortSha}).zip",
+                    string.Join("|", Directory.GetFiles(helloFolder).Select(Path.GetFileName).Where(n => n != "README.md")));
+                Check("redownload: Current lists that file alone", 1, RepoStore.Get(hello.Id)?.CurrentFiles.Count);
             }
         }
 

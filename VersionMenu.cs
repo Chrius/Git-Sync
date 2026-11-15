@@ -4,8 +4,8 @@ using System.Windows.Forms;
 namespace GitSync;
 
 /// <summary>
-/// Right-click menu of a row: the four actions, then a "Versions" submenu
-/// with every version on the site.
+/// Right-click menu of a row: the four actions, then "Redownload…" and a
+/// "Versions" submenu with every version on the site.
 ///
 /// The versions used to fill this menu itself as they arrived, and a long
 /// list made the menu grow and jump — under the mouse of someone about to
@@ -31,7 +31,8 @@ internal sealed class VersionMenu : ContextMenuStrip
     /// </summary>
     internal event Action<Release?>? LatestFound;
 
-    internal VersionMenu(Repo repo, Site site, Action edit, Action delete, Action openFolder, Action openPage)
+    /// <param name="redownload">Null greys the item out: nothing downloaded yet, or a download of this repo is running.</param>
+    internal VersionMenu(Repo repo, Site site, Action edit, Action delete, Action openFolder, Action openPage, Action? redownload)
     {
         _repo = repo;
         _site = site;
@@ -47,6 +48,13 @@ internal sealed class VersionMenu : ContextMenuStrip
         Items.Add(new ToolStripMenuItem("Open Folder", null, (_, _) => openFolder()));
         Items.Add(new ToolStripMenuItem("Open Releases Page", null, (_, _) => openPage()));
         Items.Add(new ToolStripSeparator());
+
+        // Picks the files of the Current version again: a wrong file chosen
+        // the first time is otherwise stuck until the next release.
+        Items.Add(new ToolStripMenuItem("Redownload…", null, (_, _) => redownload?.Invoke())
+        {
+            Enabled = redownload is not null
+        });
 
         _versions = new ToolStripMenuItem("Versions");
 
