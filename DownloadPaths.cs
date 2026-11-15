@@ -3,6 +3,12 @@ using System.Text.RegularExpressions;
 
 namespace GitSync;
 
+/// <summary>The version label of a saved file's name.</summary>
+/// <param name="Text">All of it: "nightly, 2".</param>
+/// <param name="Tag">The version: "nightly".</param>
+/// <param name="Counter">The copy number of an earlier build kept under the same tag, or null.</param>
+internal sealed record FileLabel(string Text, string Tag, int? Counter);
+
 /// <summary>
 /// Where downloads go, which names are safe on disk, and which old files a
 /// new version replaces.
@@ -107,11 +113,18 @@ internal static partial class DownloadPaths
     internal static string SafeFileName(string serverName) => SafeName(Path.GetFileName(serverName.Replace('\\', '/')));
 
     /// <summary>Apps\&lt;filter path&gt;\&lt;repo folder&gt;, absolute.</summary>
-    internal static string RepoFolder(Repo repo, IReadOnlyList<FilterFolder> filters)
+    internal static string RepoFolder(Repo repo, IReadOnlyList<FilterFolder> filters) =>
+        TreeFolder(repo.FilterId, repo.Folder, filters);
+
+    /// <summary>
+    /// Apps\&lt;path of the parent&gt;\&lt;name&gt;, absolute: a repo's folder inside
+    /// its filter, or a folder of the tree itself.
+    /// </summary>
+    internal static string TreeFolder(long? parentId, string name, IReadOnlyList<FilterFolder> filters)
     {
         var parts = new List<string> { AppPaths.AppsDir };
-        parts.AddRange(FilterStore.PathOf(repo.FilterId, filters).Select(SafeName));
-        parts.Add(SafeName(repo.Folder));
+        parts.AddRange(FilterStore.PathOf(parentId, filters).Select(SafeName));
+        parts.Add(SafeName(name));
         return Path.Combine([.. parts]);
     }
 
@@ -154,7 +167,7 @@ internal static partial class DownloadPaths
     /// <summary>Extensions made of two parts, which the version must not split.</summary>
     private static readonly string[] DoubleExtensions = [".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst"];
 
-    private static (string Stem, string Extension) SplitExtension(string name)
+    internal static (string Stem, string Extension) SplitExtension(string name)
     {
         string extension = DoubleExtensions.FirstOrDefault(e => name.EndsWith(e, StringComparison.OrdinalIgnoreCase))
             ?? Path.GetExtension(name);
@@ -190,6 +203,44 @@ internal static partial class DownloadPaths
 
         // A name that is only an extension (".env") gets no leading space.
         return stem.Length == 0 ? $"{label.TrimStart()}{extension}" : $"{stem}{label}{extension}";
+    }
+
+    /// <summary>
+    /// The version label at the end of a saved file's name, as
+    /// <see cref="LabeledName"/> and <see cref="KeptName"/> write it:
+    /// "app (v1.2).zip" → v1.2; "app (nightly, 2).zip" → nightly, copy 2.
+    /// Null for a name without one.
+    /// </summary>
+    internal static FileLabel? ReadLabel(string fileName)
+    {
+        (string stem, _) = SplitExtension(fileName);
+
+        // "app (v1.2.3)" has no extension, but to Path.GetExtension it ends in ".3)".
+        if (!stem.EndsWith(')') && fileName.EndsWith(')'))
+        {
+            stem = fileName;
+        }
+
+        int open = stem.LastIndexOf(" (", StringComparison.Ordinal);
+
+        if (!stem.EndsWith(')') || open < 0)
+        {
+            return null;
+        }
+
+        string text = stem[(open + 2)..^1];
+
+        if (text.Length == 0 || text.Contains('(') || text.Contains(')'))
+        {
+            return null;
+        }
+
+        int comma = text.LastIndexOf(", ", StringComparison.Ordinal);
+
+        return comma > 0 && int.TryParse(text[(comma + 2)..], System.Globalization.NumberStyles.None,
+                   System.Globalization.CultureInfo.InvariantCulture, out int copy)
+            ? new FileLabel(text, text[..comma], copy)
+            : new FileLabel(text, text, null);
     }
 
     /// <summary>

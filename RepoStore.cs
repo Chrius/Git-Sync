@@ -17,7 +17,7 @@ internal static class RepoStore
         LatestTag, LatestDate, LatestKind,
         CurrentTag, CurrentDate, CurrentKind,
         SelectedTag, SelectedDate, SelectedKind,
-        CurrentFiles, Error, CheckedAt, KeepPrevious
+        CurrentFiles, Error, CheckedAt, KeepPrevious, KeepVersions
         """;
 
     internal static List<Repo> List()
@@ -62,7 +62,8 @@ internal static class RepoStore
         CurrentFiles = [.. reader.GetString(15).Split('\n', StringSplitOptions.RemoveEmptyEntries)],
         Error = reader.GetString(16),
         CheckedAt = Database.ReadDate(reader, 17),
-        KeepPrevious = reader.GetInt64(18) != 0
+        KeepPrevious = reader.GetInt64(18) != 0,
+        KeepVersions = reader.GetInt32(19)
     };
 
     /// <summary>Tag, date and kind live in three consecutive columns.</summary>
@@ -98,13 +99,14 @@ internal static class RepoStore
 
         command.CommandText = repo.Id == 0
             ? """
-              INSERT INTO Repos (Name, SiteId, Path, Folder, FilterId, KeepPrevious)
-              VALUES ($name, $site, $path, $folder, $filter, $keep);
+              INSERT INTO Repos (Name, SiteId, Path, Folder, FilterId, KeepPrevious, KeepVersions)
+              VALUES ($name, $site, $path, $folder, $filter, $keep, $versions);
               SELECT last_insert_rowid();
               """
             : """
               UPDATE Repos SET Name = $name, SiteId = $site, Path = $path,
-                               Folder = $folder, FilterId = $filter, KeepPrevious = $keep
+                               Folder = $folder, FilterId = $filter, KeepPrevious = $keep,
+                               KeepVersions = $versions
                WHERE Id = $id;
               SELECT $id;
               """;
@@ -116,6 +118,7 @@ internal static class RepoStore
         command.Parameters.AddWithValue("$folder", repo.Folder);
         command.Parameters.AddWithValue("$filter", Database.NullableId(repo.FilterId));
         command.Parameters.AddWithValue("$keep", repo.KeepPrevious ? 1 : 0);
+        command.Parameters.AddWithValue("$versions", Math.Max(0, repo.KeepVersions));
 
         repo.Id = Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
         return repo.Id;
@@ -189,6 +192,157 @@ internal static class RepoStore
         command.Parameters.AddWithValue("$files", string.Join("\n", files));
         AddVersion(command, "current", current);
         command.ExecuteNonQuery();
+    }
+
+    /// <summary>The versions kept by "Keep previous versions", oldest first.</summary>
+    internal static List<PreviousVersion> PreviousVersions(long repoId)
+    {
+        using SqliteConnection connection = Database.Open();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT Tag, Date, Kind, Files FROM PreviousVersions WHERE RepoId = $id ORDER BY Id";
+        command.Parameters.AddWithValue("$id", repoId);
+
+        var versions = new List<PreviousVersion>();
+        using SqliteDataReader reader = command.ExecuteReader();
+
+        while (reader.Read())
+        {
+            versions.Add(new PreviousVersion(
+                new VersionRef(reader.GetString(0), Database.ReadDate(reader, 1), (VersionKind)reader.GetInt32(2)),
+                [.. reader.GetString(3).Split('\n', StringSplitOptions.RemoveEmptyEntries)]));
+        }
+
+        return versions;
+    }
+
+    /// <summary>
+    /// A finished download that keeps previous versions: Current and its
+    /// files, and the whole list of kept versions, in one transaction — a list
+    /// written apart from Current could leave a version both current and kept.
+    /// </summary>
+    internal static void SetCurrent(long id, VersionRef current, IReadOnlyList<string> files, IReadOnlyList<PreviousVersion> previous)
+    {
+        using SqliteConnection connection = Database.Open();
+        using SqliteTransaction transaction = connection.BeginTransaction();
+
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                UPDATE Repos SET CurrentTag = $currentTag, CurrentDate = $currentDate, CurrentKind = $currentKind,
+                                 CurrentFiles = $files
+                 WHERE Id = $id
+                """;
+            command.Parameters.AddWithValue("$id", id);
+            command.Parameters.AddWithValue("$files", string.Join("\n", files));
+            AddVersion(command, "current", current);
+            command.ExecuteNonQuery();
+        }
+
+        WritePrevious(connection, transaction, id, previous);
+        transaction.Commit();
+    }
+
+    /// <summary>
+    /// The download folder was renamed or moved (Edit): the files are the same,
+    /// their paths are new. Current's files and every kept version's, together.
+    /// </summary>
+    internal static void SetFiles(long id, IReadOnlyList<string> currentFiles, IReadOnlyList<PreviousVersion> previous)
+    {
+        using SqliteConnection connection = Database.Open();
+        using SqliteTransaction transaction = connection.BeginTransaction();
+
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = "UPDATE Repos SET CurrentFiles = $files WHERE Id = $id";
+            command.Parameters.AddWithValue("$id", id);
+            command.Parameters.AddWithValue("$files", string.Join("\n", currentFiles));
+            command.ExecuteNonQuery();
+        }
+
+        WritePrevious(connection, transaction, id, previous);
+        transaction.Commit();
+    }
+
+    /// <summary>
+    /// A folder moved on disk (renamed or moved in Settings → Filters): every
+    /// saved path inside it follows, for every repository and every kept
+    /// version — also files a repo left in a folder it no longer downloads to.
+    /// One transaction, writing only the rows that change. Returns how many.
+    /// </summary>
+    internal static int ApplyMoves(PathMoves moves)
+    {
+        using SqliteConnection connection = Database.Open();
+        using SqliteTransaction transaction = connection.BeginTransaction();
+        int changed = 0;
+
+        foreach (string table in new[] { "Repos", "PreviousVersions" })
+        {
+            string column = table == "Repos" ? "CurrentFiles" : "Files";
+            var rows = new List<(long Id, string Files)>();
+
+            using (SqliteCommand read = connection.CreateCommand())
+            {
+                read.Transaction = transaction;
+                read.CommandText = $"SELECT Id, {column} FROM {table}";
+                using SqliteDataReader reader = read.ExecuteReader();
+
+                while (reader.Read())
+                {
+                    rows.Add((reader.GetInt64(0), reader.GetString(1)));
+                }
+            }
+
+            foreach ((long id, string files) in rows)
+            {
+                string moved = string.Join("\n", moves.Apply(files.Split('\n', StringSplitOptions.RemoveEmptyEntries)));
+
+                if (moved == string.Join("\n", files.Split('\n', StringSplitOptions.RemoveEmptyEntries)))
+                {
+                    continue;
+                }
+
+                using SqliteCommand update = connection.CreateCommand();
+                update.Transaction = transaction;
+                update.CommandText = $"UPDATE {table} SET {column} = $files WHERE Id = $id";
+                update.Parameters.AddWithValue("$id", id);
+                update.Parameters.AddWithValue("$files", moved);
+                update.ExecuteNonQuery();
+                changed++;
+            }
+        }
+
+        transaction.Commit();
+        return changed;
+    }
+
+    /// <summary>Replaces the repo's kept versions with this list, keeping its order.</summary>
+    private static void WritePrevious(SqliteConnection connection, SqliteTransaction transaction, long id, IReadOnlyList<PreviousVersion> previous)
+    {
+        using (SqliteCommand delete = connection.CreateCommand())
+        {
+            delete.Transaction = transaction;
+            delete.CommandText = "DELETE FROM PreviousVersions WHERE RepoId = $id";
+            delete.Parameters.AddWithValue("$id", id);
+            delete.ExecuteNonQuery();
+        }
+
+        foreach (PreviousVersion version in previous)
+        {
+            using SqliteCommand insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = """
+                INSERT INTO PreviousVersions (RepoId, Tag, Date, Kind, Files)
+                VALUES ($id, $tag, $date, $kind, $files)
+                """;
+            insert.Parameters.AddWithValue("$id", id);
+            insert.Parameters.AddWithValue("$tag", version.Version.Tag);
+            insert.Parameters.AddWithValue("$date", Database.DateValue(version.Version.Date));
+            insert.Parameters.AddWithValue("$kind", (int)version.Version.Kind);
+            insert.Parameters.AddWithValue("$files", string.Join("\n", version.Files));
+            insert.ExecuteNonQuery();
+        }
     }
 
     /// <summary>

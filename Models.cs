@@ -76,6 +76,12 @@ internal sealed class Repo
     /// <summary>"Keep previous versions": a new download never deletes the files of earlier ones.</summary>
     public bool KeepPrevious { get; set; }
 
+    /// <summary>
+    /// With <see cref="KeepPrevious"/>: how many versions stay on disk, the
+    /// current one included. 0 keeps all of them.
+    /// </summary>
+    public int KeepVersions { get; set; }
+
     public VersionRef? Latest { get; set; }
     public VersionRef? Current { get; set; }
 
@@ -91,6 +97,21 @@ internal sealed class Repo
     public DateTimeOffset? CheckedAt { get; set; }
 
     public string ShortName => RepoAddress.LastSegment(Path);
+}
+
+/// <summary>
+/// A version that was replaced while "Keep previous versions" was on, with the
+/// files it left on disk (relative to the exe). The database lists them in the
+/// order they were replaced, so the oldest can be deleted when only a number
+/// of versions is kept.
+/// </summary>
+internal sealed record PreviousVersion(VersionRef Version, List<string> Files)
+{
+    /// <summary>
+    /// The same build: tag and date. Not the kind — the same release with
+    /// only its source picked is still that release.
+    /// </summary>
+    public bool SameBuild(VersionRef other) => Version.Tag == other.Tag && Version.Date == other.Date;
 }
 
 internal sealed class Release

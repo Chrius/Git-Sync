@@ -51,6 +51,8 @@
     <Compile Include="..\AutoCheck.cs" />
     <Compile Include="..\AppUpdate.cs" />
     <Compile Include="..\Downloader.cs" />
+    <Compile Include="..\VersionFiles.cs" />
+    <Compile Include="..\FileCheck.cs" />
     <Compile Include="..\DataTransfer.cs" />
   </ItemGroup>
 

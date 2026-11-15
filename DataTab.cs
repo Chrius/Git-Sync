@@ -8,7 +8,8 @@ namespace GitSync;
 
 /// <summary>
 /// "Data" tab: export the list to a file and import it into another install
-/// (or this one). Exporting only reads; importing only adds.
+/// (or this one), and check the downloaded files against the records.
+/// Exporting only reads; importing only adds.
 /// </summary>
 internal sealed class DataTab : UserControl
 {
@@ -19,14 +20,19 @@ internal sealed class DataTab : UserControl
     private readonly Label _exportHint;
     private readonly Button _import;
     private readonly Label _importHint;
+    private readonly Button _check;
+    private readonly Label _checkHint;
     private readonly Label _result;
     private readonly ProgressStrip _bar;
 
     /// <summary>Something was imported; Settings refreshes its other tabs, and the main window checks the new repos.</summary>
     internal event Action<ImportResult>? Imported;
 
-    /// <summary>An import is running; Settings stays open until it ends.</summary>
+    /// <summary>An import or a file check is running; Settings stays open until it ends.</summary>
     internal bool Busy { get; private set; }
+
+    /// <summary>What is running, for the message when Settings is closed meanwhile.</summary>
+    internal string BusyWith { get; private set; } = string.Empty;
 
     internal DataTab()
     {
@@ -46,6 +52,13 @@ internal sealed class DataTab : UserControl
         _importHint = Hint("Adds the repositories of an exported file. For each of its folders you choose where "
                          + "they go: the same folder, one of yours, or not at all. Repositories already in your "
                          + "list are skipped, so importing another file only adds what is missing.");
+
+        _check = new Button { Text = "Check Files", Size = new Size(ButtonWidth, ButtonHeight), TabIndex = 2 };
+        _check.Click += (_, _) => CheckFiles();
+        Controls.Add(_check);
+
+        _checkHint = Hint("Looks for the files recorded for each repository and lists the ones that are gone, "
+                        + "and what is in Apps without being part of any repository.");
 
         _result = new Label { AutoSize = false, ForeColor = Theme.DimText };
         Controls.Add(_result);
@@ -83,7 +96,10 @@ internal sealed class DataTab : UserControl
         _import.Location = new Point(0, _exportHint.Bottom + 24);
         _importHint.SetBounds(0, _import.Bottom + 8, width, TextHeight(_importHint, width));
 
-        _result.SetBounds(0, _importHint.Bottom + 24, width, Math.Max(0, ClientSize.Height - _importHint.Bottom - 24));
+        _check.Location = new Point(0, _importHint.Bottom + 24);
+        _checkHint.SetBounds(0, _check.Bottom + 8, width, TextHeight(_checkHint, width));
+
+        _result.SetBounds(0, _checkHint.Bottom + 24, width, Math.Max(0, ClientSize.Height - _checkHint.Bottom - 24));
 
         // Under the one-line "Importing…" text, the only thing shown while the bar is.
         _bar.SetBounds(0, _result.Top + 26, width, 6);
@@ -239,12 +255,67 @@ internal sealed class DataTab : UserControl
         ShowResult($"Importing… {done.ToString(CultureInfo.InvariantCulture)} of {Count(total, "repository", "repositories")}", Theme.Text);
     }
 
-    private void SetBusy(bool busy)
+    private void SetBusy(bool busy, string with = "The import", bool showBar = true)
     {
         Busy = busy;
+        BusyWith = with;
         _export.Enabled = !busy;
         _import.Enabled = !busy;
-        _bar.Visible = busy;
+        _check.Enabled = !busy;
+        _bar.Visible = busy && showBar;
+    }
+
+    // ---------- check files ----------
+
+    /// <summary>
+    /// Off the window's thread: a large Apps folder takes a moment to walk.
+    /// All in order shows a line here; anything to look at opens the list.
+    /// </summary>
+    private async void CheckFiles()
+    {
+        SetBusy(true, "The file check", showBar: false);
+        ShowResult("Checking files…", Theme.Text);
+
+        FileCheckResult result;
+
+        try
+        {
+            result = await Task.Run(FileCheck.Run);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or SqliteException)
+        {
+            ShowResult("Could not check the files: " + error.Message, Theme.Error);
+            return;
+        }
+        finally
+        {
+            SetBusy(false);
+        }
+
+        if (result.Missing.Count == 0 && result.Loose.Count == 0)
+        {
+            string adopted = result.Adopted switch
+            {
+                0 => string.Empty,
+                1 => " 1 earlier download was found in a repository's folder and recorded.",
+                _ => $" {result.Adopted} earlier downloads were found in repositories' folders and recorded."
+            };
+
+            ShowResult($"All {Count(result.Checked, "recorded file is", "recorded files are")} in place, "
+                     + "and everything in Apps belongs to a repository." + adopted, Theme.Success);
+            return;
+        }
+
+        ShowResult($"{Count(result.Missing.Count, "missing file", "missing files")}, "
+                 + $"{Count(result.Loose.Count, "item", "items")} in Apps part of no repository.", Theme.Amber);
+
+        using var window = new FileCheckForm(result);
+        window.ShowDialog(this);
+
+        if (window.Forgot)
+        {
+            ShowResult($"Missing files forgotten. {Count(result.Loose.Count, "item", "items")} in Apps part of no repository.", Theme.DimText);
+        }
     }
 
     private static string Describe(ImportResult result)

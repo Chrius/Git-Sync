@@ -252,6 +252,18 @@ internal sealed class MainForm : Form
         _loadingTree = false;
 
         _auto = AutoCheck.Load();
+
+        // Downloads from before every version was recorded join the records,
+        // once, so the number of versions to keep counts them too.
+        try
+        {
+            FileCheck.AdoptOnce();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            // A folder that could not be read: tried again on the next start.
+        }
+
         ReloadAll(keepScroll: false);
 
         _autoTimer.Tick += (_, _) => AutoTick();

@@ -31,10 +31,15 @@ folders of your own, and downloads the releases you pick.
   file, and imports such a file into another install, folder by folder: into the same folder,
   one of yours, or not at all. Repositories already in the list are skipped. Tokens are never
   exported.
+- **Check Files.** Settings → Data lists the downloaded files that are no longer on disk, and
+  anything in `Apps` that belongs to no repository.
 - **Version in every file name.** Files are saved as `name (build-212).zip`, so builds that
   only differ by a hash can be told apart. The repository's `README.md` is saved beside them.
-- **Keep previous versions** per repository, or let each update replace the old files.
-  Only files Git-Sync downloaded itself are ever deleted.
+- **Keep previous versions** per repository, or let each update replace the old files. Keep
+  them all, or only the last few: past that number, the oldest version's files are deleted.
+  Settings → Automation → *Move previous versions to a different folder* puts them in an `Old`
+  folder, so the repository's folder holds only the newest version. Only files Git-Sync
+  downloaded itself are ever deleted.
 - **Pin a version.** Right-click → *Versions* lists every release on the site; pick an older
   one to stay on it.
 - **Add by link.** Drag a repository link from the browser onto the window, or press
@@ -46,7 +51,8 @@ folders of your own, and downloads the releases you pick.
   version; Settings → Automation → *Check for updates on launch* turns the check off.
 - **Portable.** One self-contained `Git-Sync.exe` (no .NET install needed). Its database,
   `Git-Sync.db`, and the downloads, under `Apps\<folder path>\<repository folder>\`, live
-  beside it.
+  beside it. Renaming a repository's folder or changing its filter moves the downloads along,
+  and so does renaming or moving a folder in Settings → Filters.
 
 > `Git-Sync.db` holds your tokens in plain text. Keep it private when you copy the folder.
 

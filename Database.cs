@@ -77,6 +77,15 @@ internal static class Database
                     KeepPrevious  INTEGER NOT NULL DEFAULT 0
                 );
 
+                CREATE TABLE IF NOT EXISTS PreviousVersions (
+                    Id      INTEGER PRIMARY KEY,
+                    RepoId  INTEGER NOT NULL REFERENCES Repos(Id) ON DELETE CASCADE,
+                    Tag     TEXT    NOT NULL,
+                    Date    TEXT    NULL,
+                    Kind    INTEGER NOT NULL DEFAULT 0,
+                    Files   TEXT    NOT NULL DEFAULT ''
+                );
+
                 CREATE TABLE IF NOT EXISTS Preferences (
                     Key    TEXT PRIMARY KEY,
                     Value  TEXT NOT NULL
@@ -89,6 +98,7 @@ internal static class Database
         // Added after the first version: databases created before it lack the
         // column, and CREATE TABLE IF NOT EXISTS above does not add it to them.
         EnsureColumn(connection, "Repos", "KeepPrevious", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "Repos", "KeepVersions", "INTEGER NOT NULL DEFAULT 0");
 
         EnsureSites(connection);
     }

@@ -23,9 +23,10 @@ internal sealed class SettingsForm : Form
     {
         Text = "Settings";
         ShowIcon = false;
-        // Sized for the Automation tab, the fullest one: its last checkbox
-        // keeps as much room below it as the first one has above it.
-        ClientSize = new Size(600, 493);
+        // Sized for the Automation tab, the fullest one, with automatic checking
+        // on (its "Every" row shown): the last checkbox keeps as much room
+        // below it as the first one has above it.
+        ClientSize = new Size(600, 536);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -72,7 +73,7 @@ internal sealed class SettingsForm : Form
         if (_dataTab.Busy && e.CloseReason != CloseReason.WindowsShutDown)
         {
             e.Cancel = true;
-            DarkMessageBox.Show(this, "The import is still running. Settings can be closed when it is done.",
+            DarkMessageBox.Show(this, $"{_dataTab.BusyWith} is still running. Settings can be closed when it is done.",
                 "Settings", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }

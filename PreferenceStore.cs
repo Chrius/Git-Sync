@@ -27,6 +27,16 @@ internal static class PreferenceStore
 
     internal static void SetDownloadReadme(bool on) => Set(ReadmeKey, on ? "1" : "0");
 
+    private const string MoveOldKey = "MoveOldVersions";
+
+    /// <summary>
+    /// "Move previous versions to a different folder" (Automation tab). Off
+    /// until it is ticked. Only acts on repositories that keep previous versions.
+    /// </summary>
+    internal static bool MoveOldVersions() => Get(MoveOldKey) == "1";
+
+    internal static void SetMoveOldVersions(bool on) => Set(MoveOldKey, on ? "1" : "0");
+
     internal static string? Get(string key)
     {
         using SqliteConnection connection = Database.Open();

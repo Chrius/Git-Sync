@@ -10,7 +10,7 @@ namespace GitSync;
 /// <param name="Filter">The folder it sits in, as names from the root; empty when it is in none.</param>
 internal sealed record ExportedRepo(
     string Name, string Host, ApiType Type, string Path, string Folder,
-    IReadOnlyList<string> Filter, bool KeepPrevious);
+    IReadOnlyList<string> Filter, bool KeepPrevious, int KeepVersions = 0);
 
 /// <summary>The content of an export file.</summary>
 /// <param name="Filters">Folders as names from the root, parents before children.</param>
@@ -58,6 +58,9 @@ internal static class DataTransfer
 
     private const string FormatName = "Git-Sync data";
     private const int FormatVersion = 1;
+
+    /// <summary>The Edit window's field takes three digits; a file cannot ask for more.</summary>
+    internal const int MaxVersionsToKeep = 999;
     private const string NotOurs = "This is not a Git-Sync data file.";
 
     // ---------- export ----------
@@ -83,7 +86,7 @@ internal static class DataTransfer
             List<string> filter = repo.FilterId is { } id ? FilterStore.PathOf(id, filters) : [];
 
             data.Repos.Add(new ExportedRepo(
-                repo.Name, site.Host, site.Type, repo.Path, repo.Folder, filter, repo.KeepPrevious));
+                repo.Name, site.Host, site.Type, repo.Path, repo.Folder, filter, repo.KeepPrevious, repo.KeepVersions));
 
             for (long? current = repo.FilterId; current is { } folderId && used.Add(folderId);)
             {
@@ -145,6 +148,12 @@ internal static class DataTransfer
                 json.WritePropertyName("filter");
                 WritePath(json, repo.Filter);
                 json.WriteBoolean("keepPreviousVersions", repo.KeepPrevious);
+
+                // Only when set: a file without it means "keep them all", as before the number existed.
+                if (repo.KeepVersions > 0)
+                {
+                    json.WriteNumber("versionsToKeep", repo.KeepVersions);
+                }
                 json.WriteEndObject();
             }
 
@@ -270,7 +279,12 @@ internal static class DataTransfer
         bool keep = e.TryGetProperty("keepPreviousVersions", out JsonElement keepElement)
             && keepElement.ValueKind == JsonValueKind.True;
 
-        return new ExportedRepo(name, host, type, path, folder, filter, keep);
+        int versions = e.TryGetProperty("versionsToKeep", out JsonElement versionsElement)
+            && versionsElement.TryGetInt32(out int count) && count > 0
+                ? Math.Min(count, MaxVersionsToKeep)
+                : 0;
+
+        return new ExportedRepo(name, host, type, path, folder, filter, keep, versions);
     }
 
     /// <summary>Adds a folder and its parents to the file's list, each once, parents first.</summary>
@@ -519,7 +533,8 @@ internal static class DataTransfer
                 Path = entry.Path,
                 Folder = entry.Folder,
                 FilterId = filterId,
-                KeepPrevious = entry.KeepPrevious
+                KeepPrevious = entry.KeepPrevious,
+                KeepVersions = entry.KeepVersions
             };
 
             RepoStore.Save(repo, transaction);

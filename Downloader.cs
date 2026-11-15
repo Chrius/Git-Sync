@@ -11,6 +11,10 @@ internal readonly record struct DownloadProgress(double? Fraction, long Bytes);
 /// <param name="Warnings">Old files that could not be deleted (usually because they are in use).</param>
 internal sealed record DownloadOutcome(List<string> Files, List<string> Warnings);
 
+/// <summary>What <see cref="Downloader.Commit"/> did besides saving the new files.</summary>
+/// <param name="Renamed">Kept old files renamed out of a new file's way.</param>
+internal sealed record CommitResult(List<string> Warnings, PathMoves Renamed);
+
 /// <summary>
 /// Downloads the chosen files of a version and replaces the previous version's
 /// files with them.
@@ -65,10 +69,8 @@ internal static class Downloader
             throw;
         }
 
-        List<string> warnings = Commit(pending, repo.CurrentFiles, KeepAs(repo, redownload));
+        List<string> warnings = Finish(repo, folder, pending, DownloadedVersion(release, files), redownload);
         List<string> saved = [.. pending.Select(p => DownloadPaths.ToRelative(p.Final))];
-
-        RepoStore.SetCurrent(repo.Id, DownloadedVersion(release, files), saved);
 
         // Unticked, nothing is asked of the site and a README.md already there stays as it is.
         if (PreferenceStore.DownloadReadme()
@@ -78,6 +80,105 @@ internal static class Downloader
         }
 
         return new DownloadOutcome(saved, warnings);
+    }
+
+    /// <summary>
+    /// Everything after the files have arrived as ".part": puts them in place,
+    /// deals with the previous version's files and records the new Current.
+    /// Kept apart from the download so the tests can run it on files of their own.
+    ///
+    /// Without "Keep previous versions", and for a redownload, the previous
+    /// files are replaced. With it, the replaced version joins the list of
+    /// kept versions; "Move previous versions to a different folder" first
+    /// moves everything in the folder into Old; and with a number of versions
+    /// to keep, the oldest kept versions beyond it are deleted.
+    /// </summary>
+    internal static List<string> Finish(
+        Repo repo, string folder, IReadOnlyList<(string Part, string Final)> pending, VersionRef version, bool redownload)
+    {
+        List<string> saved = [.. pending.Select(p => DownloadPaths.ToRelative(p.Final))];
+
+        if (!repo.KeepPrevious || redownload)
+        {
+            List<string> replaced = Commit(pending, repo.CurrentFiles, KeepAs(repo, redownload)).Warnings;
+            RepoStore.SetCurrent(repo.Id, version, saved);
+            return replaced;
+        }
+
+        var warnings = new List<string>();
+        List<PreviousVersion> kept = RepoStore.PreviousVersions(repo.Id);
+        List<string> previousFiles = [.. repo.CurrentFiles];
+
+        if (PreferenceStore.MoveOldVersions())
+        {
+            (PathMoves moves, List<string> problems) = OldFolder.MoveAside(folder, pending.Select(p => p.Part));
+            warnings.AddRange(problems);
+            previousFiles = moves.Apply(previousFiles);
+            kept = moves.Apply(kept);
+        }
+
+        CommitResult commit = Commit(pending, previousFiles, KeepAs(repo, redownload: false));
+        warnings.AddRange(commit.Warnings);
+        previousFiles = commit.Renamed.Apply(previousFiles);
+
+        PreviousVersion? replacedVersion = repo.Current is { } current ? new PreviousVersion(current, previousFiles) : null;
+
+        (List<PreviousVersion> keep, List<PreviousVersion> delete) = VersionHistory.Plan(
+            kept, replacedVersion, version, saved, repo.KeepVersions, f => File.Exists(DownloadPaths.ToAbsolute(f)));
+
+        keep = DeleteVersions(delete, keep, saved, warnings);
+        RepoStore.SetCurrent(repo.Id, version, saved, keep);
+        return warnings;
+    }
+
+    /// <summary>
+    /// Deletes the files of versions no longer kept. Never a file that is
+    /// still the new version's or a kept version's, and only inside Apps.
+    /// What cannot be deleted (open in another program) stays listed, as the
+    /// oldest version, so the next update tries again. Returns the new list.
+    /// </summary>
+    private static List<PreviousVersion> DeleteVersions(
+        List<PreviousVersion> delete, List<PreviousVersion> keep, IReadOnlyList<string> current, List<string> warnings)
+    {
+        var owned = new HashSet<string>(
+            current.Concat(keep.SelectMany(v => v.Files)).Select(DownloadPaths.ToAbsolute), StringComparer.OrdinalIgnoreCase);
+
+        var leftovers = new List<PreviousVersion>();
+
+        foreach (PreviousVersion version in delete)
+        {
+            var failed = new List<string>();
+
+            foreach (string file in version.Files)
+            {
+                string full = DownloadPaths.ToAbsolute(file);
+
+                if (owned.Contains(full) || !DownloadPaths.IsInsideApps(full))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (File.Exists(full))
+                    {
+                        File.Delete(full);
+                    }
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+                {
+                    failed.Add(file);
+                    warnings.Add($"Could not delete {Path.GetFileName(full)} of {version.Version.DisplayTag}: {error.Message}");
+                }
+            }
+
+            if (failed.Count > 0)
+            {
+                leftovers.Add(version with { Files = failed });
+            }
+        }
+
+        return [.. leftovers, .. keep];
     }
 
     /// <summary>
@@ -160,10 +261,11 @@ internal static class Downloader
     /// (a release that reuses its file names, like "app-win64.zip") is first
     /// renamed to "app-win64 (tag).zip".
     /// </param>
-    internal static List<string> Commit(
+    internal static CommitResult Commit(
         IReadOnlyList<(string Part, string Final)> files, IReadOnlyList<string> previous, string? keepAs = null)
     {
         var warnings = new List<string>();
+        var renamed = new PathMoves();
         var previousFull = new HashSet<string>(previous.Select(DownloadPaths.ToAbsolute), StringComparer.OrdinalIgnoreCase);
 
         for (int i = 0; i < files.Count; i++)
@@ -174,7 +276,9 @@ internal static class Downloader
             {
                 try
                 {
-                    File.Move(final, DownloadPaths.KeptName(final, keepAs));
+                    string kept = DownloadPaths.KeptName(final, keepAs);
+                    File.Move(final, kept);
+                    renamed.Add(final, kept);
                 }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException)
                 {
@@ -199,7 +303,7 @@ internal static class Downloader
 
         if (keepAs is not null)
         {
-            return warnings;
+            return new CommitResult(warnings, renamed);
         }
 
         IEnumerable<string> next = files.Select(f => DownloadPaths.ToRelative(f.Final));
@@ -226,7 +330,7 @@ internal static class Downloader
             }
         }
 
-        return warnings;
+        return new CommitResult(warnings, renamed);
     }
 
     private static async Task FetchAsync(

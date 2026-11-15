@@ -35,6 +35,12 @@ internal static class Tests
         TestFilters();
         TestRepoStore();
         TestKeepPrevious();
+        TestFolderMove();
+        TestTreeFolderMove();
+        TestOldFolder();
+        TestVersionHistory();
+        TestDownloadSequence();
+        TestFileCheck();
         TestSorting();
         TestSearch();
         TestRateLimits();
@@ -331,7 +337,7 @@ internal static class Tests
         using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None))
         {
             warnings = Downloader.Commit(
-                [(newPart, Path.Combine(folder, "app-2.zip")), (samePart, same)], previous);
+                [(newPart, Path.Combine(folder, "app-2.zip")), (samePart, same)], previous).Warnings;
         }
 
         Check("old version's file deleted", false, File.Exists(oldApp));
@@ -967,12 +973,14 @@ internal static class Tests
         string versioned = Write("app-v1.zip", "v1 versioned");
         Write("app-win64 (v1).zip", "taken");
 
-        List<string> warnings = Downloader.Commit(
+        CommitResult commit = Downloader.Commit(
             [(Write("app-win64.zip.part", "v2 build"), reused), (Write("app-v2.zip.part", "v2 versioned"), Path.Combine(folder, "app-v2.zip"))],
             [DownloadPaths.ToRelative(reused), DownloadPaths.ToRelative(versioned)],
             keepAs: "v1");
 
-        Check("no warnings", 0, warnings.Count);
+        Check("no warnings", 0, commit.Warnings.Count);
+        Check("the renamed old file is reported, so its kept version follows it",
+            DownloadPaths.ToRelative(Path.Combine(folder, "app-win64 (v1, 2).zip")), commit.Renamed.Apply(DownloadPaths.ToRelative(reused)));
         Check("new file under the reused name", "v2 build", File.ReadAllText(reused));
         Check("old file of the reused name kept, with a counter", "v1 build",
             File.ReadAllText(Path.Combine(folder, "app-win64 (v1, 2).zip")));
@@ -1002,6 +1010,550 @@ internal static class Tests
         Check("older database gets the column, off", false, RepoStore.Get(id)?.KeepPrevious);
 
         RepoStore.Delete(id);
+    }
+
+    // ---------- folders moved by Edit, the Old folder, versions to keep ----------
+
+    private static string AppsPath(params string[] parts) => Path.Combine([AppPaths.AppsDir, .. parts]);
+
+    private static string Touch(string path, string content = "x")
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, content);
+        return path;
+    }
+
+    private static void TestFolderMove()
+    {
+        Section("Download folder moved by Edit");
+
+        string a = AppsPath("MoveTest", "Ky - ky");
+        Touch(Path.Combine(a, "ky (v1).zip"), "v1");
+        Touch(Path.Combine(a, "Old", "ky (v0).zip"), "v0");
+
+        // Folder renamed.
+        string b = AppsPath("MoveTest", "Ky");
+        Check("renamed", null, RepoFolderMove.Move(a, b));
+        Check("old name gone", false, Directory.Exists(a));
+        Check("file under the new name", "v1", File.ReadAllText(Path.Combine(b, "ky (v1).zip")));
+        Check("subfolder moved along", "v0", File.ReadAllText(Path.Combine(b, "Old", "ky (v0).zip")));
+
+        // Filter changed: into another folder of the tree, created on the way.
+        string c = AppsPath("MoveTest", "Games", "PC", "Ky");
+        Check("moved into a new filter's folder", null, RepoFolderMove.Move(b, c));
+        Check("file in the new filter's folder", "v1", File.ReadAllText(Path.Combine(c, "ky (v1).zip")));
+        Check("nothing left at the old place", false, Directory.Exists(b));
+
+        // Only the case changes: the same folder to Windows, renamed in place.
+        string lower = AppsPath("MoveTest", "Games", "PC", "ky");
+        Check("case-only rename", null, RepoFolderMove.Move(c, lower));
+        Check("name on disk has the new case", "ky",
+            Path.GetFileName(Directory.GetDirectories(AppsPath("MoveTest", "Games", "PC")).Single()));
+
+        // Something already there: nothing moves.
+        string taken = AppsPath("MoveTest", "Taken");
+        Touch(Path.Combine(taken, "someone else's.txt"));
+        string? refused = RepoFolderMove.Move(lower, taken);
+        Require("a folder with files in it is not merged into: " + refused?.Split('\n')[0], refused?.Contains("already there") == true);
+        Check("source left as it was", true, File.Exists(Path.Combine(lower, "ky (v1).zip")));
+
+        // An empty folder in the way is taken over.
+        string empty = AppsPath("MoveTest", "Empty");
+        Directory.CreateDirectory(empty);
+        Check("empty folder in the way taken over", null, RepoFolderMove.Move(lower, empty));
+        Check("files there", true, File.Exists(Path.Combine(empty, "ky (v1).zip")));
+
+        Check("nothing downloaded yet: nothing to move", null, RepoFolderMove.Move(AppsPath("MoveTest", "Never"), AppsPath("MoveTest", "Other")));
+        Check("nothing created for it", false, Directory.Exists(AppsPath("MoveTest", "Other")));
+        Check("same place", null, RepoFolderMove.Move(empty, empty));
+        Require("outside Apps refused", RepoFolderMove.Move(empty, Path.Combine(AppPaths.BaseDir, "OutsideApps")) is not null);
+        Check("still inside Apps", true, Directory.Exists(empty));
+
+        // In use: the move fails and says what to do.
+        string held = Touch(Path.Combine(empty, "held.txt"));
+        using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            string? busy = RepoFolderMove.Move(empty, AppsPath("MoveTest", "Busy"));
+            Require("folder in use reported: " + busy?.Split('\n')[0], busy?.Contains("Close any program") == true);
+        }
+
+        Check("folder in use left where it was", true, Directory.Exists(empty));
+
+        // ----- saved paths follow -----
+
+        var moves = new PathMoves();
+        moves.Add(AppsPath("Games", "Ky - ky"), AppsPath("Games", "PC", "Ky"));
+        Check("file path follows the folder", @"Apps\Games\PC\Ky\ky (v1).zip", moves.Apply(@"Apps\Games\Ky - ky\ky (v1).zip"));
+        Check("file in a subfolder follows", @"Apps\Games\PC\Ky\Old\a.zip", moves.Apply(@"Apps\Games\Ky - ky\Old\a.zip"));
+        Check("case of the saved path does not matter", @"Apps\Games\PC\Ky\b.zip", moves.Apply(@"apps\games\ky - KY\b.zip"));
+        Check("a folder that only starts the same is not moved", @"Apps\Games\Ky - ky2\c.zip", moves.Apply(@"Apps\Games\Ky - ky2\c.zip"));
+        Check("other paths unchanged", @"Apps\Other\d.zip", moves.Apply(@"Apps\Other\d.zip"));
+        List<PreviousVersion> kept = moves.Apply([new PreviousVersion(new VersionRef("v0", null, VersionKind.Release), [@"Apps\Games\Ky - ky\Old\e.zip"])]);
+        Check("kept versions' files follow too", @"Apps\Games\PC\Ky\Old\e.zip", kept[0].Files[0]);
+    }
+
+    /// <summary>A folder of the tree renamed, then moved, in Settings → Filters: what the tab does, without the tab.</summary>
+    private static void TestTreeFolderMove()
+    {
+        Section("Tree folder renamed or moved in Filters");
+
+        long games = FilterStore.Add(null, "MoveGames");
+        long nintendo = FilterStore.Add(games, "Nintendo");
+        long snes = FilterStore.Add(nintendo, "SNES");
+        long nes = FilterStore.Add(nintendo, "NES");
+        long other = FilterStore.Add(null, "MoveOther");
+        List<FilterFolder> filters = FilterStore.List();
+
+        Site github = SiteStore.List().First(s => s.Host == "github.com");
+        var a = new Repo { Name = "TreeA", SiteId = github.Id, Path = "tree/a", Folder = "A", FilterId = snes, KeepPrevious = true };
+        var b = new Repo { Name = "TreeB", SiteId = github.Id, Path = "tree/b", Folder = "B", FilterId = nes };
+        var c = new Repo { Name = "TreeC", SiteId = github.Id, Path = "tree/c", Folder = "C", FilterId = other };
+
+        foreach (Repo repo in new[] { a, b, c })
+        {
+            RepoStore.Save(repo);
+            string file = Touch(Path.Combine(DownloadPaths.RepoFolder(repo, filters), $"{repo.Folder.ToLowerInvariant()} (v2).zip"));
+            RepoStore.SetCurrent(repo.Id, new VersionRef("v2", null, VersionKind.Release), [DownloadPaths.ToRelative(file)]);
+        }
+
+        string oldOfA = Touch(Path.Combine(DownloadPaths.RepoFolder(a, filters), "Old", "a (v1).zip"));
+        RepoStore.SetCurrent(a.Id, RepoStore.Get(a.Id)!.Current!, RepoStore.Get(a.Id)!.CurrentFiles,
+            [new PreviousVersion(new VersionRef("v1", null, VersionKind.Release), [DownloadPaths.ToRelative(oldOfA)])]);
+
+        Check("tree folder on disk", AppsPath("MoveGames", "Nintendo"), DownloadPaths.TreeFolder(games, "Nintendo", filters));
+        Check("a repo's folder is its filter's folder plus its own", AppsPath("MoveGames", "Nintendo", "SNES", "A"), DownloadPaths.RepoFolder(a, filters));
+
+        // Renamed: Nintendo -> Consoles.
+        string from = DownloadPaths.TreeFolder(games, "Nintendo", filters);
+        string to = DownloadPaths.TreeFolder(games, "Consoles", filters);
+        Check("renamed on disk", null, RepoFolderMove.Move(from, to));
+        var moves = new PathMoves();
+        moves.Add(from, to);
+        Check("rows changed: two repos and one kept version", 3, RepoStore.ApplyMoves(moves));
+        FilterStore.Rename(nintendo, "Consoles");
+        filters = FilterStore.List();
+
+        foreach (Repo repo in new[] { a, b })
+        {
+            Repo stored = RepoStore.Get(repo.Id)!;
+            string full = DownloadPaths.ToAbsolute(stored.CurrentFiles[0]);
+            Check($"{repo.Name}: saved path inside the renamed folder", true,
+                full.StartsWith(AppsPath("MoveGames", "Consoles") + "\\", StringComparison.OrdinalIgnoreCase));
+            Check($"{repo.Name}: file found there", true, File.Exists(full));
+            Check($"{repo.Name}: and where its next download goes", Path.GetDirectoryName(full), DownloadPaths.RepoFolder(stored, filters));
+        }
+
+        string keptA = DownloadPaths.ToAbsolute(RepoStore.PreviousVersions(a.Id)[0].Files[0]);
+        Check("kept version's path follows too", AppsPath("MoveGames", "Consoles", "SNES", "A", "Old", "a (v1).zip"), keptA);
+        Check("kept version's file there", true, File.Exists(keptA));
+        Check("repo in another folder untouched", @"Apps\MoveOther\C\c (v2).zip", RepoStore.Get(c.Id)!.CurrentFiles[0]);
+        Check("nothing more to change the second time", 0, RepoStore.ApplyMoves(moves));
+
+        // Moved: Consoles from under MoveGames to the top level.
+        from = DownloadPaths.TreeFolder(games, "Consoles", filters);
+        to = DownloadPaths.TreeFolder(null, "Consoles", filters);
+        Check("moved on disk", null, RepoFolderMove.Move(from, to));
+        moves = new PathMoves();
+        moves.Add(from, to);
+        RepoStore.ApplyMoves(moves);
+        FilterStore.MoveTo(nintendo, null);
+        filters = FilterStore.List();
+
+        Repo movedB = RepoStore.Get(b.Id)!;
+        Check("moved: saved path", @"Apps\Consoles\NES\B\b (v2).zip", movedB.CurrentFiles[0]);
+        Check("moved: file there", true, File.Exists(DownloadPaths.ToAbsolute(movedB.CurrentFiles[0])));
+        Check("moved: next download goes there too", AppAbsoluteFolder(movedB.CurrentFiles[0]), DownloadPaths.RepoFolder(movedB, filters));
+        Check("moved: old place empty", false, Directory.Exists(AppsPath("MoveGames", "Consoles")));
+
+        // The name taken on disk by something else: refused, nothing changes.
+        Touch(AppsPath("MoveOther", "Consoles", "someone's.txt"));
+        string? refused = RepoFolderMove.Move(to, DownloadPaths.TreeFolder(other, "Consoles", filters));
+        Require("taken on disk: refused", refused?.Contains("already there") == true);
+        Check("taken on disk: files stay", true, File.Exists(DownloadPaths.ToAbsolute(RepoStore.Get(a.Id)!.CurrentFiles[0])));
+
+        foreach (Repo repo in new[] { a, b, c })
+        {
+            RepoStore.Delete(repo.Id);
+        }
+
+        foreach (long id in new[] { snes, nes, nintendo, games, other })
+        {
+            FilterStore.Delete(id);
+        }
+
+        static string AppAbsoluteFolder(string relative) => Path.GetDirectoryName(DownloadPaths.ToAbsolute(relative))!;
+    }
+
+    private static void TestFileCheck()
+    {
+        Section("Check Files");
+
+        // ----- labels read back from names -----
+
+        Check("label", "v1.2", DownloadPaths.ReadLabel("app (v1.2).zip")?.Tag);
+        Check("label without extension", "v1.2.3", DownloadPaths.ReadLabel("app (v1.2.3)")?.Tag);
+        Check("label before a double extension", "v1", DownloadPaths.ReadLabel("app (v1).tar.gz")?.Tag);
+        Check("earlier build under the same tag: tag", "nightly", DownloadPaths.ReadLabel("app (nightly, 2).zip")?.Tag);
+        Check("earlier build under the same tag: copy", 2, DownloadPaths.ReadLabel("app (nightly, 2).zip")?.Counter);
+        Check("only the last parentheses", "v1", DownloadPaths.ReadLabel("app (x64) (v1).zip")?.Tag);
+        Check("no label", null, DownloadPaths.ReadLabel("app.zip"));
+        Check("a download under way is not one", null, DownloadPaths.ReadLabel("app (v1).zip.part"));
+        Check("README.md", null, DownloadPaths.ReadLabel("README.md"));
+        Check("what LabeledName writes, read back", "release_1",
+            DownloadPaths.ReadLabel(DownloadPaths.LabeledName("app.zip", "release/1"))?.Tag);
+
+        Check("same shape: versions", FileCheck.Shape("v2.2.0"), FileCheck.Shape("v2.0.2"));
+        Check("same shape: commits", FileCheck.Shape("7fd1a60"), FileCheck.Shape("a1b2c3d"));
+        Require("other shape: x64 is no version like v2.2.0", FileCheck.Shape("x64") != FileCheck.Shape("v2.2.0"));
+
+        // ----- earlier downloads recorded -----
+
+        Site github = SiteStore.List().First(s => s.Host == "github.com");
+        var repo = new Repo { Name = "Checked", SiteId = github.Id, Path = "check/app", Folder = "Checked", KeepPrevious = true };
+        RepoStore.Save(repo);
+        string folder = DownloadPaths.RepoFolder(repo, []);
+
+        string Dated(string path, int month)
+        {
+            Touch(path);
+            File.SetLastWriteTimeUtc(path, new DateTime(2026, month, 1, 0, 0, 0, DateTimeKind.Utc));
+            return path;
+        }
+
+        string current = Dated(Path.Combine(folder, "app (v2.0.0).zip"), 5);
+        RepoStore.SetCurrent(repo.Id, new VersionRef("v2.0.0", null, VersionKind.Release), [DownloadPaths.ToRelative(current)]);
+
+        string currentTar = Dated(Path.Combine(folder, "app (v2.0.0).tar.gz"), 5);
+        string v1 = Dated(Path.Combine(folder, "app (v1.0.0).zip"), 1);
+        string v15 = Dated(Path.Combine(folder, "Old", "app (v1.5.0).zip"), 2);
+        string sameTag = Dated(Path.Combine(folder, "Old", "app (v2.0.0, 2).zip"), 3);
+        string[] theirs =
+        [
+            Touch(Path.Combine(folder, "notes (2).txt")),
+            Touch(Path.Combine(folder, "Setup (x64).exe")),
+            Touch(Path.Combine(folder, "README.md")),
+            Touch(Path.Combine(folder, "save.dat")),
+            Touch(Path.Combine(folder, "extracted", "game (v9.9.9).exe"))
+        ];
+
+        Check("files recorded: 1 of the current version, 3 earlier", 4, FileCheck.AdoptOnce());
+        Repo adopted = RepoStore.Get(repo.Id)!;
+        Check("current version's other file joins it", true,
+            adopted.CurrentFiles.Contains(DownloadPaths.ToRelative(currentTar), StringComparer.OrdinalIgnoreCase));
+        Check("earlier versions kept, oldest first", "v1.0.0,v1.5.0,v2.0.0, 2",
+            string.Join(",", RepoStore.PreviousVersions(repo.Id).Select(v => v.Version.Tag)));
+        Check("the one in Old recorded where it is", DownloadPaths.ToRelative(v15), RepoStore.PreviousVersions(repo.Id)[1].Files[0]);
+
+        var all = new HashSet<string>(
+            adopted.CurrentFiles.Concat(RepoStore.PreviousVersions(repo.Id).SelectMany(v => v.Files)).Select(DownloadPaths.ToAbsolute),
+            StringComparer.OrdinalIgnoreCase);
+        Check("the user's files are not recorded (never deleted by an update)", 0, theirs.Count(all.Contains));
+        Check("only once", 0, FileCheck.AdoptOnce());
+        Check("nothing new the next time", 0, FileCheck.AdoptDownloads());
+
+        // ----- loose, missing -----
+
+        long tree = FilterStore.Add(null, "CheckTree");
+        string stray = Touch(AppsPath("CheckTree", "Stray.txt"));
+        string goneRepo = AppsPath("CheckTree", "Deleted repo");
+        Touch(Path.Combine(goneRepo, "x (v1).zip"));
+        Touch(Path.Combine(goneRepo, "README.md"));
+        string desktop = Touch(AppsPath("CheckTree", "desktop.ini"));
+        File.SetAttributes(desktop, FileAttributes.Hidden | FileAttributes.System);
+
+        // A repo whose file is still where an older Folder name put it.
+        var moved = new Repo { Name = "Moved", SiteId = github.Id, Path = "check/moved", Folder = "New name", FilterId = tree };
+        RepoStore.Save(moved);
+        string oldPlace = Touch(AppsPath("CheckStale", "Old name", "m (v1).zip"));
+        string leftBehind = Touch(AppsPath("CheckStale", "Old name", "README.md"));
+        RepoStore.SetCurrent(moved.Id, new VersionRef("v1", null, VersionKind.Release), [DownloadPaths.ToRelative(oldPlace)]);
+
+        File.Delete(v1);
+        File.Delete(currentTar);
+
+        FileCheckResult result = FileCheck.Run();
+        var missing = result.Missing.Where(m => m.RepoId == repo.Id).ToList();
+        Check("missing: the two deleted files", "v1.0.0 app (v1.0.0).zip|v2.0.0 app (v2.0.0).tar.gz",
+            string.Join("|", missing.Select(m => $"{m.Version} {Path.GetFileName(m.Path)}").Order(StringComparer.Ordinal)));
+        Check("missing: named after the repo", "Checked", missing[0].RepoName);
+        Require($"files counted: {result.Checked}", result.Checked >= 6);
+
+        bool IsLoose(string path) => result.Loose.Contains(Path.GetFullPath(path), StringComparer.OrdinalIgnoreCase);
+        Check("loose: a file in a tree folder", true, IsLoose(stray));
+        Check("loose: a folder of no repo, listed whole", true, IsLoose(goneRepo));
+        Check("loose: not file by file", false, IsLoose(Path.Combine(goneRepo, "README.md")));
+        Check("loose: a file left beside a recorded one in an old place", true, IsLoose(leftBehind));
+        Check("not loose: the recorded file in the old place", false, IsLoose(oldPlace));
+        Check("not loose: a tree folder", false, IsLoose(AppsPath("CheckTree")));
+        Check("not loose: anything inside a repo's folder", 0, result.Loose.Count(p => p.StartsWith(folder, StringComparison.OrdinalIgnoreCase)));
+        Check("not loose: Windows' desktop.ini", false, IsLoose(desktop));
+
+        FileCheck.ForgetMissing(missing);
+        Check("forgotten: no longer missing", 0, FileCheck.Run().Missing.Count(m => m.RepoId == repo.Id));
+        Check("forgotten: the version left with no file is gone", "v1.5.0,v2.0.0, 2",
+            string.Join(",", RepoStore.PreviousVersions(repo.Id).Select(v => v.Version.Tag)));
+        Check("forgotten: current version kept", "v2.0.0", RepoStore.Get(repo.Id)!.Current?.Tag);
+        Check("forgotten: its file still there kept", 1, RepoStore.Get(repo.Id)!.CurrentFiles.Count);
+
+        RepoStore.Delete(repo.Id);
+        RepoStore.Delete(moved.Id);
+        FilterStore.Delete(tree);
+    }
+
+    private static void TestOldFolder()
+    {
+        Section("Previous versions moved into Old");
+
+        string folder = AppsPath("OldTest", "Ky");
+        string v1 = Touch(Path.Combine(folder, "ky (v1).zip"), "v1");
+        Touch(Path.Combine(folder, "ky (v1).tar.gz"), "v1 tar");
+        Touch(Path.Combine(folder, "notes.txt"), "new notes");
+        Touch(Path.Combine(folder, "extracted", "ky.exe"), "exe");
+        string readme = Touch(Path.Combine(folder, "README.md"), "readme");
+        string part = Touch(Path.Combine(folder, "ky (v2).zip.part"), "v2 arriving");
+        Touch(Path.Combine(folder, "Old", "notes.txt"), "older notes");
+        string desktop = Touch(Path.Combine(folder, "desktop.ini"), "[.ShellClassInfo]");
+        File.SetAttributes(desktop, FileAttributes.Hidden | FileAttributes.System);
+
+        (PathMoves moves, List<string> warnings) = OldFolder.MoveAside(folder, [part]);
+        string old = Path.Combine(folder, "Old");
+
+        Check("no warnings", 0, warnings.Count);
+        Check("old version's file moved", "v1", File.ReadAllText(Path.Combine(old, "ky (v1).zip")));
+        Check("double extension moved whole", "v1 tar", File.ReadAllText(Path.Combine(old, "ky (v1).tar.gz")));
+        Check("a file of the user's moved too", true, File.Exists(Path.Combine(old, "notes (2).txt")));
+        Check("one already in Old is not overwritten", "older notes", File.ReadAllText(Path.Combine(old, "notes.txt")));
+        Check("a folder moved with what is inside", "exe", File.ReadAllText(Path.Combine(old, "extracted", "ky.exe")));
+        Check("README.md stays for the new one to replace", true, File.Exists(readme));
+        Check("the download under way stays", true, File.Exists(part));
+        Check("Windows' desktop.ini stays", true, File.Exists(desktop));
+        Check("folder holds only those", "desktop.ini|ky (v2).zip.part|Old|README.md",
+            string.Join("|", Directory.EnumerateFileSystemEntries(folder).Select(Path.GetFileName).Order(StringComparer.OrdinalIgnoreCase)));
+        Check("saved path follows its file", DownloadPaths.ToRelative(Path.Combine(old, "ky (v1).zip")), moves.Apply(DownloadPaths.ToRelative(v1)));
+
+        (PathMoves none, List<string> _) = OldFolder.MoveAside(folder, [part]);
+        Check("nothing more to move the second time", 0, none.Count);
+        (PathMoves missing, List<string> _) = OldFolder.MoveAside(AppsPath("OldTest", "Never"), []);
+        Check("folder that does not exist yet", 0, missing.Count);
+        Check("Old not created for nothing", false, Directory.Exists(AppsPath("OldTest", "Never")));
+
+        Check("free name for a folder", Path.Combine(old, "extracted (2)"), OldFolder.FreeName(Path.Combine(old, "extracted"), isFolder: true));
+
+        // In use: stays, with a warning, and the rest still moves.
+        string folder2 = AppsPath("OldTest", "Busy");
+        string busy = Touch(Path.Combine(folder2, "running.exe"));
+        Touch(Path.Combine(folder2, "free.zip"));
+
+        using (new FileStream(busy, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            (PathMoves moved, List<string> problems) = OldFolder.MoveAside(folder2, []);
+            Check("file in use reported", 1, problems.Count);
+            Check("the rest moved", 1, moved.Count);
+        }
+
+        Check("file in use stayed", true, File.Exists(busy));
+    }
+
+    private static void TestVersionHistory()
+    {
+        Section("Versions to keep");
+
+        static VersionRef V(int n) => new($"v{n}", new DateTimeOffset(2026, 1, n, 0, 0, 0, TimeSpan.Zero), VersionKind.Release);
+        static PreviousVersion P(int n, params string[] files) => new(V(n), [.. files]);
+        static bool All(string _) => true;
+        static string Tags(IEnumerable<PreviousVersion> list) => string.Join(",", list.Select(v => v.Version.Tag));
+
+        var (keep, delete) = VersionHistory.Plan([], P(1, "a1", "b1"), V(2), ["a2", "b2"], 3, All);
+        Check("2nd download: the 1st is kept", "v1", Tags(keep));
+        Check("2nd download: nothing deleted", "", Tags(delete));
+
+        (keep, delete) = VersionHistory.Plan([P(1, "a1", "b1")], P(2, "a2", "b2"), V(3), ["a3", "b3"], 3, All);
+        Check("3rd download: 1st and 2nd kept", "v1,v2", Tags(keep));
+
+        (keep, delete) = VersionHistory.Plan([P(1, "a1", "b1"), P(2, "a2", "b2")], P(3, "a3", "b3"), V(4), ["a4", "b4"], 3, All);
+        Check("4th download with 3 kept: 2nd and 3rd kept", "v2,v3", Tags(keep));
+        Check("4th download with 3 kept: the 1st goes", "v1", Tags(delete));
+        Check("all of its files go, not a count of files", "a1|b1", string.Join("|", delete[0].Files));
+
+        (keep, delete) = VersionHistory.Plan([P(1, "a1"), P(2, "a2"), P(3, "a3")], P(4, "a4"), V(5), ["a5"], 0, All);
+        Check("0 keeps every version", "v1,v2,v3,v4", Tags(keep));
+        Check("0 deletes nothing", "", Tags(delete));
+
+        (keep, delete) = VersionHistory.Plan([P(1, "a1"), P(2, "a2")], P(3, "a3"), V(4), ["a4"], 1, All);
+        Check("1 keeps only the new one", "", Tags(keep));
+        Check("1: every older one goes", "v1,v2,v3", Tags(delete));
+
+        (keep, delete) = VersionHistory.Plan([P(1, "a1"), P(2, "a2"), P(3, "a3"), P(4, "a4")], P(5, "a5"), V(6), ["a6"], 3, All);
+        Check("number lowered: the extra oldest go at once", "v1,v2,v3", Tags(delete));
+        Check("number lowered: the newest stay", "v4,v5", Tags(keep));
+
+        (keep, delete) = VersionHistory.Plan([P(1, @"Old\a1"), P(2, @"Old\a2")], P(3, "a3"), V(1), [@"a1"], 3, All);
+        Check("older version downloaded again: its kept copy goes", "v1", Tags(delete));
+        Check("and the replaced one is kept", "v2,v3", Tags(keep));
+
+        (keep, delete) = VersionHistory.Plan([P(1, "same.zip", "a1")], P(2, "a2"), V(3), ["same.zip"], 0, All);
+        Check("a file the new version was saved over is not the old one's any more", "a1", string.Join("|", keep[0].Files));
+
+        (keep, delete) = VersionHistory.Plan([P(1, "gone1"), P(2, "a2")], P(3, "a3"), V(4), ["a4"], 3, f => !f.StartsWith("gone", StringComparison.Ordinal));
+        Check("a version deleted by hand is forgotten, and does not count", "v2,v3", Tags(keep));
+        Check("nothing deleted for it", "", Tags(delete));
+
+        (keep, delete) = VersionHistory.Plan([], P(1, "a1"), new VersionRef("v1", V(1).Date, VersionKind.ReleaseSource), ["a1-source"], 0, All);
+        Check("same build with another kind is not kept twice", "", Tags(keep));
+
+        (keep, _) = VersionHistory.Plan([], new PreviousVersion(new VersionRef("nightly", V(1).Date, VersionKind.Release), ["n1"]),
+            new VersionRef("nightly", V(2).Date, VersionKind.Release), ["n2"], 0, All);
+        Check("a nightly under the same tag is another build: kept", "nightly", Tags(keep));
+    }
+
+    /// <summary>
+    /// The example of the request, file by file: 3 versions kept, Old on. Two
+    /// files per version, a file of the user's and the README in the folder.
+    /// </summary>
+    private static void TestDownloadSequence()
+    {
+        Section("Updates keeping 3 versions, with Old");
+
+        Site github = SiteStore.List().First(s => s.Host == "github.com");
+        var repo = new Repo { Name = "Seq", SiteId = github.Id, Path = "seq/test", Folder = "Seq", KeepPrevious = true, KeepVersions = 3 };
+        long id = RepoStore.Save(repo);
+        Check("versions to keep saved", 3, RepoStore.Get(id)?.KeepVersions);
+
+        string folder = DownloadPaths.RepoFolder(repo, []);
+        string old = Path.Combine(folder, "Old");
+        PreferenceStore.SetMoveOldVersions(true);
+
+        List<string> Download(int n, bool redownload = false, string? tag = null)
+        {
+            Directory.CreateDirectory(folder);
+            tag ??= $"v{n}";
+            var version = new VersionRef(tag, new DateTimeOffset(2026, 1, n, 0, 0, 0, TimeSpan.Zero), VersionKind.Release);
+            var pending = new List<(string Part, string Final)>();
+
+            foreach (string name in new[] { "app.zip", "app.tar.gz" })
+            {
+                string final = Path.Combine(folder, DownloadPaths.LabeledName(name, tag));
+                pending.Add((Touch(final + ".part", $"{tag} {name}"), final));
+            }
+
+            List<string> warnings = Downloader.Finish(RepoStore.Get(id)!, folder, pending, version, redownload);
+            Touch(Path.Combine(folder, "README.md"), $"readme of {tag}");
+            return warnings;
+        }
+
+        string Main() => string.Join("|", Directory.EnumerateFiles(folder).Select(Path.GetFileName).Order(StringComparer.OrdinalIgnoreCase));
+        string InOld() => Directory.Exists(old)
+            ? string.Join("|", Directory.EnumerateFileSystemEntries(old).Select(Path.GetFileName).Order(StringComparer.OrdinalIgnoreCase))
+            : "(no Old)";
+        string Kept() => string.Join(",", RepoStore.PreviousVersions(id).Select(v => v.Version.Tag));
+
+        Check("1st download: no warnings", 0, Download(1).Count);
+        Check("1st: its files in the folder", "app (v1).tar.gz|app (v1).zip|README.md", Main());
+        Check("1st: no Old yet", "(no Old)", InOld());
+
+        Touch(Path.Combine(folder, "my notes.txt"), "mine");
+
+        Download(2);
+        Check("2nd: only its files in the folder", "app (v2).tar.gz|app (v2).zip|README.md", Main());
+        Check("2nd: the 1st and the user's file in Old", "app (v1).tar.gz|app (v1).zip|my notes.txt", InOld());
+        Check("2nd: 1st kept", "v1", Kept());
+        Check("README replaced, not moved", "readme of v2", File.ReadAllText(Path.Combine(folder, "README.md")));
+
+        Download(3);
+        Check("3rd: only its files in the folder", "app (v3).tar.gz|app (v3).zip|README.md", Main());
+        Check("3rd: 1st and 2nd in Old", "app (v1).tar.gz|app (v1).zip|app (v2).tar.gz|app (v2).zip|my notes.txt", InOld());
+        Check("3rd: 1st and 2nd kept", "v1,v2", Kept());
+
+        Download(4);
+        Check("4th: only its files in the folder", "app (v4).tar.gz|app (v4).zip|README.md", Main());
+        Check("4th: the 1st deleted from Old, 2nd and 3rd there", "app (v2).tar.gz|app (v2).zip|app (v3).tar.gz|app (v3).zip|my notes.txt", InOld());
+        Check("4th: 2nd and 3rd kept", "v2,v3", Kept());
+        Check("current files recorded", @"app (v4).zip|app (v4).tar.gz",
+            string.Join("|", RepoStore.Get(id)!.CurrentFiles.Select(Path.GetFileName)));
+        Check("kept files recorded where they are now", DownloadPaths.ToRelative(Path.Combine(old, "app (v2).zip")),
+            RepoStore.PreviousVersions(id)[0].Files[0]);
+
+        // Redownload of the version there is: nothing moves, nothing is counted.
+        Download(4, redownload: true);
+        Check("redownload: folder as it was", "app (v4).tar.gz|app (v4).zip|README.md", Main());
+        Check("redownload: Old as it was", "app (v2).tar.gz|app (v2).zip|app (v3).tar.gz|app (v3).zip|my notes.txt", InOld());
+        Check("redownload: kept list as it was", "v2,v3", Kept());
+
+        // An older version picked and downloaded again.
+        Download(2);
+        Check("2nd again: in the folder", "app (v2).tar.gz|app (v2).zip|README.md", Main());
+        Check("2nd again: its old copy is not kept twice", "app (v3).tar.gz|app (v3).zip|app (v4).tar.gz|app (v4).zip|my notes.txt", InOld());
+        Check("2nd again: 3rd and 4th kept", "v3,v4", Kept());
+
+        // Without Old: previous versions stay beside the new one, the oldest still go.
+        PreferenceStore.SetMoveOldVersions(false);
+        Download(5);
+        Check("without Old: previous version stays beside the new one",
+            "app (v2).tar.gz|app (v2).zip|app (v5).tar.gz|app (v5).zip|README.md", Main());
+        Check("without Old: the oldest kept version still goes", "app (v4).tar.gz|app (v4).zip|my notes.txt", InOld());
+        Check("without Old: 4th and 2nd kept", "v4,v2", Kept());
+
+        // Keep all.
+        repo = RepoStore.Get(id)!;
+        repo.KeepVersions = 0;
+        RepoStore.Save(repo);
+        Download(6);
+        Check("0 = all: nothing deleted", "v4,v2,v5", Kept());
+
+        // Keep previous versions switched off: the version replaced is deleted, the kept ones stay.
+        repo = RepoStore.Get(id)!;
+        repo.KeepPrevious = false;
+        RepoStore.Save(repo);
+        Download(7);
+        Check("option off: the replaced version deleted", false, File.Exists(Path.Combine(folder, "app (v6).zip")));
+        Check("option off: kept ones stay on disk", true, File.Exists(Path.Combine(folder, "app (v5).zip")));
+        Check("option off: kept list untouched", "v4,v2,v5", Kept());
+
+        // A file in use is reported, and stays listed to be deleted next time.
+        repo = RepoStore.Get(id)!;
+        repo.KeepPrevious = true;
+        repo.KeepVersions = 2;
+        RepoStore.Save(repo);
+        string locked = Path.Combine(old, "app (v4).zip");
+        List<string> warnings;
+
+        using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            warnings = Download(8);
+        }
+
+        Check("file in use reported", 1, warnings.Count(w => w.Contains("app (v4).zip", StringComparison.Ordinal)));
+        Check("file in use stays listed, first", "v4,v7", Kept());
+        Download(9);
+        Check("deleted on the next update", false, File.Exists(locked));
+        Check("then 2 versions in all", "v8", Kept());
+
+        PreferenceStore.SetMoveOldVersions(false);
+
+        // Deleting the repo forgets its kept versions (the files stay, as always).
+        RepoStore.Delete(id);
+        Check("kept versions forgotten with the repo", 0, RepoStore.PreviousVersions(id).Count);
+        Check("files stay on disk", true, File.Exists(Path.Combine(folder, "app (v9).zip")));
+
+        // A database from before the number existed.
+        long other = RepoStore.Save(new Repo { Name = "Older", SiteId = github.Id, Path = "older/db", Folder = "Older", KeepPrevious = true });
+
+        using (SqliteConnection connection = Database.Open())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = "ALTER TABLE Repos DROP COLUMN KeepVersions";
+            command.ExecuteNonQuery();
+        }
+
+        Database.Prepare();
+        Check("older database gets the column, 0 = all", 0, RepoStore.Get(other)?.KeepVersions);
+        RepoStore.Delete(other);
+
+        Check("move to Old: off by default", false, new Func<bool>(() =>
+        {
+            PreferenceStore.Set("MoveOldVersions", "");
+            return PreferenceStore.MoveOldVersions();
+        })());
     }
 
     private static void TestSearch()
@@ -1419,7 +1971,7 @@ internal static class Tests
         {
             new()
             {
-                Id = 1, Name = "Pokémon Tool", SiteId = 1, Path = "o/poke", Folder = "Poke", FilterId = 2, KeepPrevious = true,
+                Id = 1, Name = "Pokémon Tool", SiteId = 1, Path = "o/poke", Folder = "Poke", FilterId = 2, KeepPrevious = true, KeepVersions = 3,
                 Selected = new VersionRef("v1.2", pinDate, VersionKind.Release),
                 Current = new VersionRef("v1.1-current", null, VersionKind.Release),
                 Latest = new VersionRef("v1.3-latest", null, VersionKind.Release),
@@ -1453,10 +2005,13 @@ internal static class Tests
         Check("round trip: download folder", "Poke", poke.Folder);
         Check("round trip: filter", @"Games\PC", string.Join("\\", poke.Filter));
         Check("round trip: keep previous", true, poke.KeepPrevious);
+        Check("round trip: versions to keep", 3, poke.KeepVersions);
+        Check("versions to keep written only when set", 1, json.Split("versionsToKeep").Length - 1);
         Check("pinned version not exported: whoever imports picks their own", false,
             json.Contains("selectedVersion", StringComparison.Ordinal) || json.Contains("v1.2", StringComparison.Ordinal));
 
         ExportedRepo loose = read.Repos[1];
+        Check("no number: all kept", 0, loose.KeepVersions);
         Check("round trip: self-hosted API", ApiType.Gitea, loose.Type);
         Check("round trip: in no folder", 0, loose.Filter.Count);
         Check("round trip: not kept", false, loose.KeepPrevious);
@@ -1505,7 +2060,7 @@ internal static class Tests
             ,"filters":[["ImportRoot"],["ImportRoot","PC"],["OnlyInFile"]],
              "repos":[
                {"name":"A","site":"GitHub.com","api":"GitHub","repository":"o/import-a","folder":"A - a","filter":["ImportRoot","PC"],
-                "keepPreviousVersions":true,"selectedVersion":{"tag":"v2","kind":"Release"}},
+                "keepPreviousVersions":true,"versionsToKeep":4,"selectedVersion":{"tag":"v2","kind":"Release"}},
                {"name":"B","site":"git.import-test.org","api":"Gitea","repository":"me/import-b","folder":"B","filter":[]},
                {"name":"C","site":"gitlab.com","api":"GitLab","repository":"g/s/import-c","folder":"C","filter":["ImportRoot"]}
              ]}
@@ -1529,6 +2084,7 @@ internal static class Tests
         Check("into the same folder as in the file", pc, a.FilterId);
         Check("existing folder reused, not doubled", 1, after.Count(f => f.ParentId is null && f.Name.Equals("importroot", StringComparison.OrdinalIgnoreCase)));
         Check("keep previous imported", true, a.KeepPrevious);
+        Check("versions to keep imported", 4, a.KeepVersions);
         Check("a pin in an older file is ignored", null, a.Selected);
         Check("nothing downloaded yet", null, a.Current);
 

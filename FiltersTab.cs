@@ -222,8 +222,45 @@ internal sealed class FiltersTab : UserControl
             return;
         }
 
+        if (!MoveOnDisk(folder, folder.ParentId, name))
+        {
+            // Back into the box with the new name, to try again once the folder is free.
+            BeginInvoke(() =>
+            {
+                if (_tree.FindNode(folder.Id) is { } again)
+                {
+                    _tree.BeginRename(again, CommitRename, text);
+                }
+            });
+            return;
+        }
+
         FilterStore.Rename(folder.Id, name);
         Reload(folder.Id);
+    }
+
+    /// <summary>
+    /// A folder renamed or moved here changes where every repository inside it
+    /// downloads, so its folder under Apps goes along, and with it the saved
+    /// paths of their files. Done before the tree changes: when the folder
+    /// cannot move (in use, or the name taken on disk), the user is told why
+    /// and the tree stays as it was.
+    /// </summary>
+    private bool MoveOnDisk(FilterFolder folder, long? newParentId, string newName)
+    {
+        string from = DownloadPaths.TreeFolder(folder.ParentId, folder.Name, _filters);
+        string to = DownloadPaths.TreeFolder(newParentId, newName, _filters);
+
+        if (RepoFolderMove.Move(from, to) is { } problem)
+        {
+            Warn(problem);
+            return false;
+        }
+
+        var moves = new PathMoves();
+        moves.Add(from, to);
+        RepoStore.ApplyMoves(moves);
+        return true;
     }
 
     private void DeleteSelected()
@@ -323,12 +360,19 @@ internal sealed class FiltersTab : UserControl
             return;
         }
 
+        if (!MoveOnDisk(dragged, target?.Id, dragged.Name))
+        {
+            return;
+        }
+
         try
         {
             FilterStore.MoveTo(dragged.Id, target?.Id);
         }
         catch (InvalidOperationException error)
         {
+            // The tree did not change: the files go back where it still points.
+            MoveOnDisk(new FilterFolder { Id = dragged.Id, ParentId = target?.Id, Name = dragged.Name }, dragged.ParentId, dragged.Name);
             Warn(error.Message);
             return;
         }

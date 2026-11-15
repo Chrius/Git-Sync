@@ -15,7 +15,6 @@ internal sealed class AutomationTab : UserControl
 {
     private const int TopCheck = 6;
     private const int TopInterval = 38;
-    private const int TopHint = 84;
     private const int Indent = 20;
 
     private readonly CheckBox _enabled;
@@ -28,6 +27,8 @@ internal sealed class AutomationTab : UserControl
     private readonly Label _sourceHint;
     private readonly CheckBox _readme;
     private readonly Label _readmeHint;
+    private readonly CheckBox _moveOld;
+    private readonly Label _moveOldHint;
     private readonly Panel _appSeparator;
     private readonly CheckBox _appUpdates;
 
@@ -67,10 +68,7 @@ internal sealed class AutomationTab : UserControl
         {
             AutoSize = false,
             ForeColor = Theme.DimText,
-            Location = new Point(0, TopHint),
-            Text = "Every repository is checked, counting from the last time all of them were "
-                 + "checked — by hand or automatically.\n\n"
-                 + "Without a GitHub token, GitHub allows 60 requests per hour: a long list checked "
+            Text = "Without a GitHub token, GitHub allows 60 requests per hour: a long list checked "
                  + "every 30 minutes can run out. A token in the Sites tab raises that to 5,000."
         };
         Controls.Add(_hint);
@@ -130,6 +128,31 @@ internal sealed class AutomationTab : UserControl
         };
         Controls.Add(_readmeHint);
 
+        _moveOld = new CheckBox
+        {
+            Text = "Move previous versions to a different folder",
+            AutoSize = true,
+            TabIndex = 4
+        };
+        _moveOld.CheckedChanged += (_, _) =>
+        {
+            if (!_filling)
+            {
+                PreferenceStore.SetMoveOldVersions(_moveOld.Checked);
+            }
+        };
+        Controls.Add(_moveOld);
+
+        _moveOldHint = new Label
+        {
+            AutoSize = false,
+            ForeColor = Theme.DimText,
+            Text = "For repositories that keep previous versions: each download or update first moves "
+                 + "everything in the repository's folder into an \"Old\" folder inside it, README.md "
+                 + "aside, so only the new version's files stay in the folder itself."
+        };
+        Controls.Add(_moveOldHint);
+
         // About Git-Sync itself rather than the repositories: set apart by a line.
         _appSeparator = new Panel { BackColor = Theme.Separator, Height = 1 };
         Controls.Add(_appSeparator);
@@ -138,7 +161,7 @@ internal sealed class AutomationTab : UserControl
         {
             Text = "Check for updates on launch",
             AutoSize = true,
-            TabIndex = 4
+            TabIndex = 5
         };
         _appUpdates.CheckedChanged += (_, _) =>
         {
@@ -156,7 +179,15 @@ internal sealed class AutomationTab : UserControl
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
+        Arrange();
+    }
 
+    /// <summary>
+    /// Top to bottom. The "Every" row takes room only while automatic checking
+    /// is on: off, what follows moves up into its place.
+    /// </summary>
+    private void Arrange()
+    {
         int width = ClientSize.Width;
 
         if (width <= 100)
@@ -165,10 +196,11 @@ internal sealed class AutomationTab : UserControl
         }
 
         _interval.SetBounds(_everyLabel.Right + 8, TopInterval, 180, _interval.Height);
+        int hintTop = _interval.Visible ? _interval.Bottom + 20 : _enabled.Bottom + 14;
 
         // Heights measured from the text at this width, so a wrapped line never
         // runs into what follows it.
-        _hint.SetBounds(0, TopHint, width, TextHeight(_hint, width));
+        _hint.SetBounds(0, hintTop, width, TextHeight(_hint, width));
         _last.SetBounds(0, _hint.Bottom + 14, width, 2 * _last.Font.Height + 4);
 
         _separator.SetBounds(0, _last.Bottom + 14, width, 1);
@@ -176,8 +208,10 @@ internal sealed class AutomationTab : UserControl
         _sourceHint.SetBounds(Indent, _showSource.Bottom + 6, width - Indent, TextHeight(_sourceHint, width - Indent));
         _readme.Location = new Point(0, _sourceHint.Bottom + 16);
         _readmeHint.SetBounds(Indent, _readme.Bottom + 6, width - Indent, TextHeight(_readmeHint, width - Indent));
+        _moveOld.Location = new Point(0, _readmeHint.Bottom + 16);
+        _moveOldHint.SetBounds(Indent, _moveOld.Bottom + 6, width - Indent, TextHeight(_moveOldHint, width - Indent));
 
-        _appSeparator.SetBounds(0, _readmeHint.Bottom + 14, width, 1);
+        _appSeparator.SetBounds(0, _moveOldHint.Bottom + 14, width, 1);
         _appUpdates.Location = new Point(0, _appSeparator.Bottom + 16);
     }
 
@@ -194,6 +228,7 @@ internal sealed class AutomationTab : UserControl
         _interval.SelectedIndex = Array.FindIndex(AutoCheck.Intervals, i => i.Minutes == settings.Minutes);
         _showSource.Checked = PreferenceStore.ShowSource();
         _readme.Checked = PreferenceStore.DownloadReadme();
+        _moveOld.Checked = PreferenceStore.MoveOldVersions();
         _appUpdates.Checked = AppUpdate.Enabled();
         _filling = false;
 
@@ -223,6 +258,7 @@ internal sealed class AutomationTab : UserControl
     {
         _everyLabel.Visible = show;
         _interval.Visible = show;
+        Arrange();
     }
 
     private void ShowLastCheck()

@@ -29,6 +29,15 @@ internal sealed class RepoForm : Form
     private readonly TextBox _folder;
     private readonly ComboBox _filter;
     private readonly CheckBox _keepPrevious;
+    private readonly Panel _keepFrame;
+    private readonly TextBox _keepVersions;
+    private readonly Label _keepLabel;
+    private readonly ToolTip _tips = new();
+    private readonly IReadOnlyList<FilterFolder> _filters;
+
+    /// <summary>Where the files of the repo being edited are, before any change: Save moves them along.</summary>
+    private readonly string? _startFolder;
+
     private readonly List<Panel> _frames = [];
     private readonly Button _save;
     private readonly Button _cancel;
@@ -58,13 +67,15 @@ internal sealed class RepoForm : Form
         AddressMatch? dropped = null)
     {
         _editing = editing;
+        _filters = filters;
+        _startFolder = editing is null ? null : DownloadPaths.RepoFolder(editing, filters);
 
         // A copy: a server detected while typing is added here, not to the main window's list.
         _sites = [.. sites];
 
         Text = editing is null ? "Add Repository" : "Edit Repository";
         ShowIcon = false;
-        ClientSize = new Size(480, 420);
+        ClientSize = new Size(480, 398);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -98,16 +109,48 @@ internal sealed class RepoForm : Form
             Location = new Point(Edge, 304),
             TabIndex = 5
         };
+        _keepPrevious.CheckedChanged += (_, _) => ShowKeepVersions();
         Controls.Add(_keepPrevious);
 
-        Controls.Add(new Label
+        // How many versions, beside the checkbox and only while it is ticked.
+        (_keepFrame, _keepVersions) = DarkControls.CreateField(6);
+        _keepVersions.MaxLength = 3;
+        _keepVersions.Text = "0";
+        _keepFrame.SetBounds(
+            _keepPrevious.Left + _keepPrevious.PreferredSize.Width + 10,
+            _keepPrevious.Top + ((_keepPrevious.PreferredSize.Height - DarkControls.FieldHeight) / 2),
+            44, DarkControls.FieldHeight);
+        Controls.Add(_keepFrame);
+        _frames.Add(_keepFrame);
+
+        _keepLabel = DarkControls.CreateLabel("versions (0 = all)", _keepFrame.Right + 8, 0);
+        _keepLabel.ForeColor = Theme.DimText;
+        _keepLabel.Top = _keepFrame.Top + ((DarkControls.FieldHeight - _keepLabel.PreferredHeight) / 2);
+        Controls.Add(_keepLabel);
+
+        string keepTip = "How many versions to keep, the current one included. "
+                       + "Past that number, the oldest version's files are deleted. 0 keeps every version.";
+        _tips.SetToolTip(_keepVersions, keepTip);
+        _tips.SetToolTip(_keepLabel, keepTip);
+
+        // Digits only: typed ones through KeyPress, pasted ones cleaned on TextChanged.
+        _keepVersions.KeyPress += (_, e) =>
         {
-            Text = "A new version is downloaded beside the old ones instead of replacing them.",
-            AutoSize = false,
-            Location = new Point(Edge + 18, 326),
-            Size = new Size(ClientSize.Width - (2 * Edge) - 18, 18),
-            ForeColor = Theme.DimText
-        });
+            if (!char.IsControl(e.KeyChar) && !char.IsAsciiDigit(e.KeyChar))
+            {
+                e.Handled = true;
+            }
+        };
+        _keepVersions.TextChanged += (_, _) =>
+        {
+            string digits = new([.. _keepVersions.Text.Where(char.IsAsciiDigit)]);
+
+            if (digits != _keepVersions.Text)
+            {
+                _keepVersions.Text = digits;
+                _keepVersions.SelectionStart = digits.Length;
+            }
+        };
 
         _save = new Button { Text = "Save", Size = new Size(96, 30), TabIndex = 10 };
         _save.Click += Save;
@@ -146,6 +189,7 @@ internal sealed class RepoForm : Form
             _folder.Text = editing.Folder;
             SelectFilter(editing.FilterId);
             _keepPrevious.Checked = editing.KeepPrevious;
+            _keepVersions.Text = editing.KeepVersions.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
             // Keeps following Name and Repository only if it was never changed by hand.
             string suggestion = RepoAddress.SuggestFolder(editing.Name, editing.Path);
@@ -168,6 +212,7 @@ internal sealed class RepoForm : Form
         }
 
         _filling = false;
+        ShowKeepVersions();
 
         _name.TextChanged += (_, _) => FollowFolder();
         _repository.TextChanged += RepositoryChanged;
@@ -184,6 +229,17 @@ internal sealed class RepoForm : Form
         };
         _folder.TextChanged += (_, _) => DropInvalidFolderChars();
     }
+
+    private void ShowKeepVersions()
+    {
+        _keepFrame.Visible = _keepPrevious.Checked;
+        _keepLabel.Visible = _keepPrevious.Checked;
+    }
+
+    /// <summary>The number typed beside "Keep previous versions"; empty counts as 0, keep all.</summary>
+    private int KeepVersions() =>
+        int.TryParse(_keepVersions.Text, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out int count) ? count : 0;
 
     private void DropInvalidFolderChars()
     {
@@ -431,6 +487,23 @@ internal sealed class RepoForm : Form
             return;
         }
 
+        // A new Folder or Filter moves the download folder along, so the files
+        // downloaded under the old name are still where Git-Sync looks. Done
+        // before anything is saved: if the folder cannot move, the window
+        // stays open with the old values still in effect. Not when another
+        // repo shares the folder — its files would go along without it knowing.
+        string toFolder = DownloadPaths.RepoFolder(new Repo { Folder = folder, FilterId = filterId }, _filters);
+        bool moveFolder = _editing is not null && _startFolder is not null
+            && !string.Equals(_startFolder, toFolder, StringComparison.Ordinal)
+            && !RepoStore.List().Any(r => r.Id != _editing.Id
+                && string.Equals(DownloadPaths.RepoFolder(r, _filters), _startFolder, StringComparison.OrdinalIgnoreCase));
+
+        if (moveFolder && RepoFolderMove.Move(_startFolder!, toFolder) is { } problem)
+        {
+            Warn(problem, _folder);
+            return;
+        }
+
         Repo repo = _editing ?? new Repo();
 
         bool addressChanged = _editing is null
@@ -443,10 +516,21 @@ internal sealed class RepoForm : Form
         repo.Folder = folder;
         repo.FilterId = filterId;
         repo.KeepPrevious = _keepPrevious.Checked;
+        repo.KeepVersions = KeepVersions();
 
         try
         {
             RepoStore.Save(repo);
+
+            if (moveFolder)
+            {
+                // The saved paths of the files follow the folder.
+                var moves = new PathMoves();
+                moves.Add(_startFolder!, toFolder);
+                RepoStore.SetFiles(repo.Id,
+                    moves.Apply(RepoStore.Get(repo.Id)?.CurrentFiles ?? []),
+                    moves.Apply(RepoStore.PreviousVersions(repo.Id)));
+            }
 
             // What was checked and pinned belonged to the old address.
             if (_editing is not null && addressChanged)
@@ -456,6 +540,12 @@ internal sealed class RepoForm : Form
         }
         catch (Exception error)
         {
+            // Not saved: the folder goes back where the database still says it is.
+            if (moveFolder)
+            {
+                RepoFolderMove.Move(toFolder, _startFolder!);
+            }
+
             DarkMessageBox.Show(this, "Could not save the repository.\n" + error.Message,
                 Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
@@ -470,5 +560,15 @@ internal sealed class RepoForm : Form
     {
         DarkMessageBox.Show(this, message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         focus.Focus();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _tips.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 }
