@@ -149,11 +149,10 @@ internal static class DataTransfer
                 WritePath(json, repo.Filter);
                 json.WriteBoolean("keepPreviousVersions", repo.KeepPrevious);
 
-                // Only when set: a file without it means "keep them all", as before the number existed.
-                if (repo.KeepVersions > 0)
-                {
-                    json.WriteNumber("versionsToKeep", repo.KeepVersions);
-                }
+                // Always, 0 included, so the file shows every setting of the
+                // repo. Reading still takes a missing one (files from before
+                // the number existed) as 0, keep them all.
+                json.WriteNumber("versionsToKeep", repo.KeepVersions);
                 json.WriteEndObject();
             }
 

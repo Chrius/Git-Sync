@@ -2006,7 +2006,8 @@ internal static class Tests
         Check("round trip: filter", @"Games\PC", string.Join("\\", poke.Filter));
         Check("round trip: keep previous", true, poke.KeepPrevious);
         Check("round trip: versions to keep", 3, poke.KeepVersions);
-        Check("versions to keep written only when set", 1, json.Split("versionsToKeep").Length - 1);
+        Check("versions to keep written for every repo, 0 included", 2, json.Split("versionsToKeep").Length - 1);
+        Check("0 written as such", true, json.Contains("\"versionsToKeep\": 0", StringComparison.Ordinal));
         Check("pinned version not exported: whoever imports picks their own", false,
             json.Contains("selectedVersion", StringComparison.Ordinal) || json.Contains("v1.2", StringComparison.Ordinal));
 
