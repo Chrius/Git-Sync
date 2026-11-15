@@ -7,7 +7,7 @@
     <AssemblyName>Git-Sync</AssemblyName>
     <Product>Git-Sync</Product>
     <AssemblyTitle>Git-Sync</AssemblyTitle>
-    <Version>1.0.5</Version>
+    <Version>1.0.6</Version>
 
     <!-- The window reads its icon from the exe itself, so changing this file and
          rebuilding updates both places at once. -->
