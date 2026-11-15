@@ -1237,6 +1237,14 @@ internal static class Tests
         Check("show source code: on", true, PreferenceStore.ShowSource());
         PreferenceStore.SetShowSource(false);
         Check("show source code: off again", false, PreferenceStore.ShowSource());
+
+        // ----- "Download README.md" -----
+
+        Check("download README.md: on by default", true, PreferenceStore.DownloadReadme());
+        PreferenceStore.SetDownloadReadme(false);
+        Check("download README.md: off", false, PreferenceStore.DownloadReadme());
+        PreferenceStore.SetDownloadReadme(true);
+        Check("download README.md: on again", true, PreferenceStore.DownloadReadme());
     }
 
     // ---------- export and import ----------
@@ -1358,7 +1366,7 @@ internal static class Tests
         RepoStore.Save(existing);
 
         string file = "{" + Head + """
-            ,"filters":[["ImportRoot"],["ImportRoot","PC"]],
+            ,"filters":[["ImportRoot"],["ImportRoot","PC"],["OnlyInFile"]],
              "repos":[
                {"name":"A","site":"GitHub.com","api":"GitHub","repository":"o/import-a","folder":"A - a","filter":["ImportRoot","PC"],
                 "keepPreviousVersions":true,"selectedVersion":{"tag":"v2","kind":"Release"}},
@@ -1369,12 +1377,15 @@ internal static class Tests
 
         ExportData both = DataTransfer.Parse(file);
         Check("new repos before importing", 2, both.Repos.Count(r => !DataTransfer.IsAlreadyThere(r, RepoStore.List(), SiteStore.List())));
-        Check("missing folders before importing (ImportRoot matches importroot)", 1, DataTransfer.MissingFolders(both, FilterStore.List()));
+        Check("new repos counted for the window", 2, DataTransfer.NewRepos(both, RepoStore.List(), SiteStore.List()));
 
-        ImportResult first = DataTransfer.Import(both, destinations: null);
+        // Nothing chosen: every folder of the file goes into the same folder here.
+        ImportResult first = DataTransfer.Import(both);
         Check("added", 2, first.AddedRepoIds.Count);
         Check("already there, whatever the case of its path", 1, first.AlreadyThere);
-        Check("folders added", 1, first.FoldersAdded);
+        Check("folders added: only PC (ImportRoot matched importroot)", 1, first.FoldersAdded);
+        Check("a folder of the file with no repo to import is not created", null,
+            DataTransfer.FindFolder(["OnlyInFile"], FilterStore.List()));
 
         List<FilterFolder> after = FilterStore.List();
         long? pc = DataTransfer.FindFolder(["importroot", "PC"], after);
@@ -1397,13 +1408,13 @@ internal static class Tests
         Check("existing repo keeps its folder", null, mine.FilterId);
 
         var seen = new ProgressRecorder();
-        ImportResult second = DataTransfer.Import(both, destinations: null, seen);
+        ImportResult second = DataTransfer.Import(both, progress: seen);
         Check("progress counts every repository of the file, ending at the total", "0,1,2,3", string.Join(",", seen.Values));
         Check("same file again: nothing added", 0, second.AddedRepoIds.Count);
         Check("same file again: all already there", 3, second.AlreadyThere);
         Check("same file again: no folders added", 0, second.FoldersAdded);
 
-        // ----- repositories only -----
+        // ----- choosing where each folder goes -----
 
         string other = "{" + Head + """
             ,"filters":[["Elsewhere"],["Elsewhere","X"]],
@@ -1411,23 +1422,42 @@ internal static class Tests
                {"name":"D","site":"github.com","api":"GitHub","repository":"o/import-d","folder":"D","filter":["Elsewhere","X"]},
                {"name":"E","site":"github.com","api":"GitHub","repository":"o/import-e","folder":"E","filter":[]},
                {"name":"F","site":"github.com","api":"GitHub","repository":"o/import-f","folder":"F","filter":["Elsewhere","X"]},
-               {"name":"A again","site":"github.com","api":"GitHub","repository":"o/import-a","folder":"A","filter":["Elsewhere"]}
+               {"name":"A again","site":"github.com","api":"GitHub","repository":"o/import-a","folder":"A","filter":["Elsewhere"]},
+               {"name":"G","site":"github.com","api":"GitHub","repository":"o/import-g","folder":"G","filter":"Skipped/Here"},
+               {"name":"H","site":"github.com","api":"GitHub","repository":"o/import-h","folder":"H","filter":"Made/Here"}
              ]}
             """;
 
-        ExportData reposOnly = DataTransfer.Parse(other);
-        Check("folder window rows: no folder first, then folders with new repos", @"(none):1|Elsewhere\X:2",
-            string.Join("|", DataTransfer.SourceFolders(reposOnly, RepoStore.List(), SiteStore.List())
+        ExportData chosen = DataTransfer.Parse(other);
+        Check("window rows: no folder first, then the file's folders with new repos", @"(none):1|Elsewhere\X:2|Skipped\Here:1|Made\Here:1",
+            string.Join("|", DataTransfer.SourceFolders(chosen, RepoStore.List(), SiteStore.List())
                 .Select(s => (s.Path.Count == 0 ? "(none)" : string.Join("\\", s.Path)) + ":" + s.NewRepos)));
 
-        var destinations = new Dictionary<string, long?> { [DataTransfer.Key(["Elsewhere", "X"])] = root };
-        ImportResult third = DataTransfer.Import(reposOnly, destinations);
-        Check("repos only: added", 3, third.AddedRepoIds.Count);
-        Check("repos only: the one already there skipped", 1, third.AlreadyThere);
-        Check("repos only: no folders added", 0, third.FoldersAdded);
-        Check("repos only: the file's folder is not created", null, DataTransfer.FindFolder(["Elsewhere"], FilterStore.List()));
-        Check("repos only: into the chosen folder", root, RepoStore.List().First(r => r.Path == "o/import-d").FilterId);
-        Check("repos only: no destination given -> no folder", null, RepoStore.List().First(r => r.Path == "o/import-e").FilterId);
+        // Elsewhere\X into one of ours, Skipped\Here left out; (none) and Made\Here keep the default.
+        var targets = new Dictionary<string, ImportTarget>
+        {
+            [DataTransfer.Key(["Elsewhere", "X"])] = ImportTarget.Into(root),
+            [DataTransfer.Key(["Skipped", "Here"])] = ImportTarget.DoNotImport
+        };
+
+        ImportResult third = DataTransfer.Import(chosen, targets);
+        Check("chosen: added", 4, third.AddedRepoIds.Count);
+        Check("chosen: the one already there skipped", 1, third.AlreadyThere);
+        Check("chosen: Do not import leaves its repos out", 1, third.LeftOut);
+        Check("chosen: Made and Made\\Here created for the default", 2, third.FoldersAdded);
+        Check("chosen: into the folder picked", root, RepoStore.List().First(r => r.Path == "o/import-d").FilterId);
+        Check("chosen: the file's folder of a redirected row is not created", null, DataTransfer.FindFolder(["Elsewhere"], FilterStore.List()));
+        Check("chosen: no folder stays no folder", null, RepoStore.List().First(r => r.Path == "o/import-e").FilterId);
+        Check("chosen: default goes into the created folder", DataTransfer.FindFolder(["Made", "Here"], FilterStore.List()),
+            RepoStore.List().First(r => r.Path == "o/import-h").FilterId);
+        Check("chosen: the left-out repo is not there", false, RepoStore.List().Any(r => r.Path == "o/import-g"));
+        Check("chosen: the left-out folder is not created", null, DataTransfer.FindFolder(["Skipped"], FilterStore.List()));
+
+        // Left out is not "already there": the same file imported again with the defaults brings it in.
+        ImportResult fourth = DataTransfer.Import(chosen);
+        Check("left out before, imported now", 1, fourth.AddedRepoIds.Count);
+        Check("the rest already there", 5, fourth.AlreadyThere);
+        Check("its folders created now", 2, fourth.FoldersAdded);
 
         // ----- one transaction: a failure keeps nothing -----
 
@@ -1445,7 +1475,8 @@ internal static class Tests
         try
         {
             // A destination that is no folder: the foreign key refuses the first repo, after its site was added.
-            DataTransfer.Import(DataTransfer.Parse(failing), new Dictionary<string, long?> { [DataTransfer.Key(["Lost"])] = 987654 });
+            DataTransfer.Import(DataTransfer.Parse(failing),
+                new Dictionary<string, ImportTarget> { [DataTransfer.Key(["Lost"])] = ImportTarget.Into(987654) });
         }
         catch (SqliteException error)
         {
@@ -1466,7 +1497,7 @@ internal static class Tests
         }
 
         var clock = System.Diagnostics.Stopwatch.StartNew();
-        ImportResult bigResult = DataTransfer.Import(big, destinations: null);
+        ImportResult bigResult = DataTransfer.Import(big);
         clock.Stop();
         Check("1,500 repositories imported", 1500, bigResult.AddedRepoIds.Count);
         Require($"1,500 repositories in one transaction take seconds, not minutes ({clock.Elapsed.TotalSeconds:0.0} s)",
@@ -1754,10 +1785,21 @@ internal static class Tests
             Check("README is not one of the version's files", false,
                 RepoStore.Get(gitlabCli.Id)!.CurrentFiles.Any(f => f.EndsWith("README.md", StringComparison.OrdinalIgnoreCase)));
             Console.WriteLine($"       {smallest.Name} + README.md ({readme.Length} chars)");
+
+            // "Download README.md" unticked: the next download leaves the README there alone.
+            PreferenceStore.SetDownloadReadme(false);
+            File.WriteAllText(Path.Combine(folder, "README.md"), "kept as it was");
+            await Downloader.DownloadAsync(gitlab, RepoStore.Get(gitlabCli.Id)!, [], glab, [smallest], null, CancellationToken.None);
+            Check("README.md option off: the README there is left alone", "kept as it was",
+                File.ReadAllText(Path.Combine(folder, "README.md")));
         }
         catch (ApiException error)
         {
             Check("glab download with README", "no error", error.Message);
+        }
+        finally
+        {
+            PreferenceStore.SetDownloadReadme(true);
         }
 
         try

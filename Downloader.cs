@@ -70,7 +70,9 @@ internal static class Downloader
 
         RepoStore.SetCurrent(repo.Id, DownloadedVersion(release, files), saved);
 
-        if (await SaveReadmeAsync(site, repo, folder, release.Tag, cancel) is { } readmeProblem)
+        // Unticked, nothing is asked of the site and a README.md already there stays as it is.
+        if (PreferenceStore.DownloadReadme()
+            && await SaveReadmeAsync(site, repo, folder, release.Tag, cancel) is { } readmeProblem)
         {
             warnings.Add(readmeProblem);
         }

@@ -17,7 +17,22 @@ internal sealed record ExportedRepo(
 internal sealed record ExportData(List<IReadOnlyList<string>> Filters, List<ExportedRepo> Repos);
 
 /// <summary>What an import changed.</summary>
-internal sealed record ImportResult(List<long> AddedRepoIds, int AlreadyThere, int FoldersAdded);
+/// <param name="LeftOut">New repositories not imported because their folder was set to "Do not import".</param>
+internal sealed record ImportResult(List<long> AddedRepoIds, int AlreadyThere, int FoldersAdded, int LeftOut);
+
+/// <summary>Where the repositories of one folder of the file go (the "Goes into" of the import window).</summary>
+/// <param name="Skip">"Do not import": every repository of that folder is left out.</param>
+/// <param name="CreatePath">A folder path here, created if missing (an empty path is no folder).</param>
+/// <param name="FolderId">An existing folder here, or null for no folder; used when <paramref name="CreatePath"/> is null.</param>
+internal sealed record ImportTarget(bool Skip, IReadOnlyList<string>? CreatePath, long? FolderId)
+{
+    /// <summary>The same folder as in the file — the default.</summary>
+    internal static ImportTarget SameAs(IReadOnlyList<string> path) => new(false, path, null);
+
+    internal static ImportTarget DoNotImport { get; } = new(true, null, null);
+
+    internal static ImportTarget Into(long? folderId) => new(false, null, folderId);
+}
 
 /// <summary>
 /// Export and import of the folder tree and the repositories (Settings → Data).
@@ -366,10 +381,6 @@ internal static class DataTransfer
         return parent;
     }
 
-    /// <summary>The file's folders this install does not have yet.</summary>
-    internal static int MissingFolders(ExportData data, IReadOnlyList<FilterFolder> filters) =>
-        data.Filters.Count(path => FindFolder(path, filters) is null);
-
     /// <summary>
     /// The file's folders that hold repositories to import, in the file's
     /// order, for the folder window. "No folder" (an empty path) comes first
@@ -407,17 +418,16 @@ internal static class DataTransfer
     /// <summary>
     /// Adds what is missing. Nothing already here is changed: an existing
     /// repository keeps its name, folder and settings even when the file
-    /// says otherwise.
+    /// says otherwise. A folder is created only when a repository goes into
+    /// it, so a folder set to "Do not import" leaves no empty folder behind.
     /// </summary>
-    /// <param name="destinations">
-    /// Null to import the file's folders too, each repository going into the
-    /// folder it was in. Otherwise "repositories only": the local folder for
-    /// each of the file's folders, by <see cref="Key"/>; a missing key or null
-    /// means no folder.
+    /// <param name="targets">
+    /// Where each of the file's folders goes, by <see cref="Key"/>. A folder
+    /// without an entry goes into the same folder as in the file.
     /// </param>
     /// <param name="progress">How many of the file's repositories have been handled so far.</param>
     internal static ImportResult Import(
-        ExportData data, IReadOnlyDictionary<string, long?>? destinations, IProgress<int>? progress = null)
+        ExportData data, IReadOnlyDictionary<string, ImportTarget>? targets = null, IProgress<int>? progress = null)
     {
         List<FilterFolder> filters = FilterStore.List();
         List<Repo> repos = RepoStore.List();
@@ -451,17 +461,9 @@ internal static class DataTransfer
             return parent;
         }
 
-        if (destinations is null)
-        {
-            // Every folder of the file, in its order, so new siblings keep the order they had there.
-            foreach (IReadOnlyList<string> path in data.Filters)
-            {
-                EnsureFolder(path);
-            }
-        }
-
         var added = new List<long>();
         int alreadyThere = 0;
+        int leftOut = 0;
         int handled = 0;
         HashSet<string> existing = ExistingKeys(repos, sites);
 
@@ -478,12 +480,24 @@ internal static class DataTransfer
 
             handled++;
 
-            // Each one added joins the set: a file listing the same repo twice adds it once.
-            if (!existing.Add(RepoKey(entry.Host, entry.Path)))
+            string key = RepoKey(entry.Host, entry.Path);
+
+            if (existing.Contains(key))
             {
                 alreadyThere++;
                 continue;
             }
+
+            ImportTarget target = targets?.GetValueOrDefault(Key(entry.Filter)) ?? ImportTarget.SameAs(entry.Filter);
+
+            if (target.Skip)
+            {
+                leftOut++;
+                continue;
+            }
+
+            // Each one added joins the set: a file listing the same repo twice adds it once.
+            existing.Add(key);
 
             Site? site = sites.FirstOrDefault(s => string.Equals(s.Host, entry.Host, StringComparison.OrdinalIgnoreCase));
 
@@ -494,9 +508,9 @@ internal static class DataTransfer
                 sites.Add(site);
             }
 
-            long? filterId = destinations is null
-                ? entry.Filter.Count == 0 ? null : EnsureFolder(entry.Filter)
-                : destinations.GetValueOrDefault(Key(entry.Filter));
+            long? filterId = target.CreatePath is { } path
+                ? path.Count == 0 ? null : EnsureFolder(path)
+                : target.FolderId;
 
             var repo = new Repo
             {
@@ -514,6 +528,6 @@ internal static class DataTransfer
 
         transaction.Commit();
         progress?.Report(handled);
-        return new ImportResult(added, alreadyThere, foldersAdded);
+        return new ImportResult(added, alreadyThere, foldersAdded, leftOut);
     }
 }

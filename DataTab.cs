@@ -43,8 +43,9 @@ internal sealed class DataTab : UserControl
         _import.Click += (_, _) => Import();
         Controls.Add(_import);
 
-        _importHint = Hint("Adds the repositories of an exported file, with or without its folders. Repositories "
-                         + "already in your list are skipped, so importing another file only adds what is missing.");
+        _importHint = Hint("Adds the repositories of an exported file. For each of its folders you choose where "
+                         + "they go: the same folder, one of yours, or not at all. Repositories already in your "
+                         + "list are skipped, so importing another file only adds what is missing.");
 
         _result = new Label { AutoSize = false, ForeColor = Theme.DimText };
         Controls.Add(_result);
@@ -173,40 +174,23 @@ internal sealed class DataTab : UserControl
         List<Site> sites = SiteStore.List();
 
         int newRepos = DataTransfer.NewRepos(data, repos, sites);
-        int newFolders = DataTransfer.MissingFolders(data, filters);
 
-        if (newRepos == 0 && newFolders == 0)
+        // Folders only come along with repositories, so with none new there is nothing to do.
+        if (newRepos == 0)
         {
-            ShowResult("Nothing to import: everything in this file is already here.", Theme.DimText);
+            ShowResult("Nothing to import: every repository in this file is already in your list.", Theme.DimText);
             return;
         }
 
-        using var choice = new ImportChoiceForm(Path.GetFileName(dialog.FileName), data, newRepos, newFolders);
+        using var window = new ImportForm(
+            Path.GetFileName(dialog.FileName), data, newRepos, DataTransfer.SourceFolders(data, repos, sites), filters);
 
-        if (choice.ShowDialog(this) != DialogResult.OK)
+        if (window.ShowDialog(this) != DialogResult.OK)
         {
             return;
         }
 
-        Dictionary<string, long?>? destinations = null;
-
-        if (choice.ReposOnly)
-        {
-            if (newRepos == 0)
-            {
-                ShowResult("Nothing to import: every repository in this file is already in your list.", Theme.DimText);
-                return;
-            }
-
-            using var map = new FolderMapForm(DataTransfer.SourceFolders(data, repos, sites), filters);
-
-            if (map.ShowDialog(this) != DialogResult.OK)
-            {
-                return;
-            }
-
-            destinations = map.Destinations;
-        }
+        Dictionary<string, ImportTarget> targets = window.Targets;
 
         // Off the window's thread, which meanwhile shows how far it got: a long
         // list on a slow drive still takes a moment, and a frozen window looks
@@ -231,7 +215,7 @@ internal sealed class DataTab : UserControl
 
         try
         {
-            result = await Task.Run(() => DataTransfer.Import(data, destinations, progress));
+            result = await Task.Run(() => DataTransfer.Import(data, targets, progress));
         }
         catch (SqliteException error)
         {
@@ -284,6 +268,13 @@ internal sealed class DataTab : UserControl
             text.Append(result.AlreadyThere == 1
                 ? " 1 repository was already in your list."
                 : $" {result.AlreadyThere} repositories were already in your list.");
+        }
+
+        if (result.LeftOut > 0)
+        {
+            text.Append(result.LeftOut == 1
+                ? " 1 repository was left out (Do not import)."
+                : $" {result.LeftOut} repositories were left out (Do not import).");
         }
 
         if (result.AddedRepoIds.Count > 0)

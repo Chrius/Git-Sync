@@ -25,6 +25,8 @@ internal sealed class AutomationTab : UserControl
     private readonly Panel _separator;
     private readonly CheckBox _showSource;
     private readonly Label _sourceHint;
+    private readonly CheckBox _readme;
+    private readonly Label _readmeHint;
 
     /// <summary>True while the screen fills itself, so it is not taken for user changes.</summary>
     private bool _filling;
@@ -101,6 +103,30 @@ internal sealed class AutomationTab : UserControl
         };
         Controls.Add(_sourceHint);
 
+        _readme = new CheckBox
+        {
+            Text = "Download README.md",
+            AutoSize = true,
+            TabIndex = 3
+        };
+        _readme.CheckedChanged += (_, _) =>
+        {
+            if (!_filling)
+            {
+                PreferenceStore.SetDownloadReadme(_readme.Checked);
+            }
+        };
+        Controls.Add(_readme);
+
+        _readmeHint = new Label
+        {
+            AutoSize = false,
+            ForeColor = Theme.DimText,
+            Text = "Saves the repository's README.md beside the files of each download or update, "
+                 + "replacing the previous one. When off, a README.md already there is left as it is."
+        };
+        Controls.Add(_readmeHint);
+
         Fill();
     }
 
@@ -126,6 +152,8 @@ internal sealed class AutomationTab : UserControl
         _separator.SetBounds(0, _last.Bottom + 14, width, 1);
         _showSource.Location = new Point(0, _separator.Bottom + 16);
         _sourceHint.SetBounds(Indent, _showSource.Bottom + 6, width - Indent, TextHeight(_sourceHint, width - Indent));
+        _readme.Location = new Point(0, _sourceHint.Bottom + 16);
+        _readmeHint.SetBounds(Indent, _readme.Bottom + 6, width - Indent, TextHeight(_readmeHint, width - Indent));
     }
 
     private static int TextHeight(Label label, int width) =>
@@ -140,6 +168,7 @@ internal sealed class AutomationTab : UserControl
         _enabled.Checked = settings.Enabled;
         _interval.SelectedIndex = Array.FindIndex(AutoCheck.Intervals, i => i.Minutes == settings.Minutes);
         _showSource.Checked = PreferenceStore.ShowSource();
+        _readme.Checked = PreferenceStore.DownloadReadme();
         _filling = false;
 
         ShowInterval(settings.Enabled);
