@@ -377,9 +377,11 @@ internal static class Downloader
                 {
                     response = await ApiClient.SendAsync(site, url, accept, start.Token);
                 }
-                catch (OperationCanceledException) when (!cancel.IsCancellationRequested)
+                catch (OperationCanceledException error) when (!cancel.IsCancellationRequested)
                 {
-                    throw new ApiException($"{file.Name}: the download did not start in time.");
+                    throw new ApiException(ApiClient.ConnectTimedOut(error)
+                        ? $"{file.Name}: could not connect to {new Uri(url).Host} in time."
+                        : $"{file.Name}: the download did not start in time.");
                 }
             }
 

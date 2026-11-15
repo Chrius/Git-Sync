@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using Microsoft.Data.Sqlite;
 
 namespace GitSync;
@@ -47,6 +50,7 @@ internal static class Tests
         TestSearch();
         TestRateLimits();
         TestSiteDetection();
+        TestConnector();
         TestAutoCheck();
         TestAppUpdate();
         TestDataTransfer();
@@ -2235,6 +2239,159 @@ internal static class Tests
     }
 
     // ---------- Git-Sync's own updates ----------
+
+    private static void TestConnector() => TestConnectorAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// 192.0.2.1 (TEST-NET-1, never routed) stands for an IPv6 address that does
+    /// not answer: Windows waits 21 s on it before giving up, as it does on a
+    /// network whose IPv6 lets nothing through.
+    /// </summary>
+    private static async Task TestConnectorAsync()
+    {
+        Section("Connecting: IPv6 and IPv4 side by side");
+
+        IPAddress v6a = IPAddress.Parse("2001:db8::1"), v6b = IPAddress.Parse("2001:db8::2");
+        IPAddress v4a = IPAddress.Parse("198.51.100.1"), v4b = IPAddress.Parse("198.51.100.2");
+        static string Show(List<IPAddress> order) => string.Join(" ", order);
+
+        Check("IPv6 listed first: the families alternate", "2001:db8::1 198.51.100.1 2001:db8::2 198.51.100.2",
+            Show(Connector.Order([v6a, v6b, v4a, v4b], null)));
+        Check("IPv4 listed first stays first", "198.51.100.1 2001:db8::1 198.51.100.2",
+            Show(Connector.Order([v4a, v6a, v4b], null)));
+        Check("the family that worked before goes first", "198.51.100.1 2001:db8::1 198.51.100.2 2001:db8::2",
+            Show(Connector.Order([v6a, v6b, v4a, v4b], AddressFamily.InterNetwork)));
+        Check("a remembered family the host lacks changes nothing", "2001:db8::1 2001:db8::2",
+            Show(Connector.Order([v6a, v6b], AddressFamily.InterNetwork)));
+        Check("no addresses, nothing to try", 0, Connector.Order([], null).Count);
+
+        IPAddress silent = IPAddress.Parse("192.0.2.1");
+        using var site = new TcpListener(IPAddress.Loopback, 0);
+        site.Start();
+        int port = ((IPEndPoint)site.LocalEndpoint).Port;
+
+        var clock = Stopwatch.StartNew();
+
+        using (Socket socket = await Connector.ConnectFirstAsync([silent, IPAddress.Loopback], port, Connector.AttemptDelay, default))
+        {
+            Check("a silent first address: the next one connects", IPAddress.Loopback, ((IPEndPoint)socket.RemoteEndPoint!).Address);
+            Require($"…without waiting it out ({clock.ElapsedMilliseconds} ms)", clock.ElapsedMilliseconds < 3000);
+        }
+
+        // Windows takes about 2 s to report a refusal on loopback, so a delay of
+        // 30 s shows the next address starting on the failure, not on the clock.
+        using var ipv6Only = new TcpListener(IPAddress.IPv6Loopback, 0);
+        ipv6Only.Start();
+        int port6 = ((IPEndPoint)ipv6Only.LocalEndpoint).Port;
+        clock.Restart();
+
+        using (Socket socket = await Connector.ConnectFirstAsync(
+            [IPAddress.Loopback, IPAddress.IPv6Loopback], port6, TimeSpan.FromSeconds(30), default))
+        {
+            Check("a refused first address: the next one connects", IPAddress.IPv6Loopback, ((IPEndPoint)socket.RemoteEndPoint!).Address);
+            Require($"…as soon as the first fails ({clock.ElapsedMilliseconds} ms)", clock.ElapsedMilliseconds < 15000);
+        }
+
+        ipv6Only.Stop();
+
+        try
+        {
+            using Socket socket = await Connector.ConnectFirstAsync([IPAddress.Loopback], port6, Connector.AttemptDelay, default);
+            Check("nothing listening: the refusal comes out", "refused", "connected");
+        }
+        catch (SocketException error)
+        {
+            Check("nothing listening: the refusal comes out", SocketError.ConnectionRefused, error.SocketErrorCode);
+        }
+
+        using (var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(500)))
+        {
+            try
+            {
+                using Socket socket = await Connector.ConnectFirstAsync([silent], port, Connector.AttemptDelay, deadline.Token);
+                Check("a deadline cancels with its own token", "cancelled", "connected");
+            }
+            catch (OperationCanceledException error)
+            {
+                Check("a deadline cancels with its own token", true, error.CancellationToken == deadline.Token);
+            }
+            catch (SocketException error)
+            {
+                Check("a deadline cancels with its own token", "cancelled", $"192.0.2.1 is not silent here ({error.SocketErrorCode})");
+            }
+        }
+
+        // The handler turns a ConnectTimeout into "could not connect" only when
+        // the cancellation carries its token; anything else reads as a broken connection.
+        using (var handler = new SocketsHttpHandler
+        {
+            ConnectTimeout = TimeSpan.FromSeconds(1),
+            ConnectCallback = (context, cancel) => Connector.ConnectAsync(context.DnsEndPoint, cancel)
+        })
+        using (var client = new HttpClient(handler))
+        {
+            try
+            {
+                using HttpResponseMessage response = await client.GetAsync($"http://192.0.2.1:{port}/");
+                Check("ConnectTimeout through the handler", "timeout", $"{(int)response.StatusCode}");
+            }
+            catch (OperationCanceledException error)
+            {
+                Check("ConnectTimeout through the handler is told apart", true, ApiClient.ConnectTimedOut(error));
+            }
+            catch (HttpRequestException error)
+            {
+                Check("ConnectTimeout through the handler is told apart", "timeout", error.Message);
+            }
+        }
+
+        Check("a deadline of the request itself is not a connect timeout", false,
+            ApiClient.ConnectTimedOut(new OperationCanceledException()));
+
+        // Git-Sync's own client: "localhost" is ::1 then 127.0.0.1 on Windows,
+        // and only the IPv4 one answers here. A listener of its own: the one
+        // above still holds the connections of the checks before, never accepted.
+        using var web = new TcpListener(IPAddress.Loopback, 0);
+        web.Start();
+        int webPort = ((IPEndPoint)web.LocalEndpoint).Port;
+
+        Task server = Task.Run(async () =>
+        {
+            using TcpClient caller = await web.AcceptTcpClientAsync();
+            NetworkStream stream = caller.GetStream();
+            string request = string.Empty;
+            byte[] buffer = new byte[4096];
+
+            // Up to the blank line that ends a GET's headers.
+            while (!request.Contains("\r\n\r\n"))
+            {
+                int read = await stream.ReadAsync(buffer);
+
+                if (read == 0)
+                {
+                    break;
+                }
+
+                request += System.Text.Encoding.ASCII.GetString(buffer, 0, read);
+            }
+
+            byte[] answer = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"u8.ToArray();
+            await stream.WriteAsync(answer);
+        });
+
+        var local = new Site { Host = $"http://localhost:{webPort}", Type = ApiType.Gitea };
+
+        using (var limit = new CancellationTokenSource(TimeSpan.FromSeconds(15)))
+        using (HttpResponseMessage response = await ApiClient.SendAsync(local, $"http://localhost:{webPort}/x", "*/*", limit.Token))
+        {
+            Check("Git-Sync's client reaches the address that answers", 200, (int)response.StatusCode);
+        }
+
+        await server;
+        Check("…and goes through the side-by-side connect, which remembers IPv4",
+            AddressFamily.InterNetwork, Connector.Remembered("localhost"));
+        Check("…for that host only", null, Connector.Remembered("example.com"));
+    }
 
     private static void TestAppUpdate()
     {

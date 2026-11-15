@@ -42,6 +42,7 @@
     <Compile Include="..\DownloadPaths.cs" />
     <Compile Include="..\ReleaseParser.cs" />
     <Compile Include="..\ApiClient.cs" />
+    <Compile Include="..\Connector.cs" />
     <Compile Include="..\VersionState.cs" />
     <Compile Include="..\RepoOrder.cs" />
     <Compile Include="..\RepoSearch.cs" />

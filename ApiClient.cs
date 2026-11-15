@@ -156,7 +156,11 @@ internal static class ApiClient
             AllowAutoRedirect = false,
             AutomaticDecompression = DecompressionMethods.All,
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-            ConnectTimeout = TimeSpan.FromSeconds(20)
+            ConnectTimeout = TimeSpan.FromSeconds(20),
+
+            // IPv6 and IPv4 side by side: .NET's own connect tries them one
+            // after the other and never reached IPv4 behind a silent IPv6.
+            ConnectCallback = (context, cancel) => Connector.ConnectAsync(context.DnsEndPoint, cancel)
         };
 
         // Timeouts are per request (and per read during downloads), not one
@@ -168,6 +172,19 @@ internal static class ApiClient
 
         return client;
     }
+
+    /// <summary>
+    /// True when the deadline that ran out was ConnectTimeout, which the handler
+    /// marks with a TimeoutException inside: no connection was ever made, a
+    /// different trouble from a site that connects and then does not answer.
+    /// </summary>
+    internal static bool ConnectTimedOut(OperationCanceledException error) =>
+        error.InnerException is TimeoutException;
+
+    private static string TimedOut(Site site, OperationCanceledException error) =>
+        ConnectTimedOut(error)
+            ? $"Could not connect to {RepoAddress.HostOnly(site.Host)} in time."
+            : "The site did not answer in time.";
 
     private static void AddAuth(HttpRequestMessage request, Site site)
     {
@@ -274,9 +291,9 @@ internal static class ApiClient
 
             return await response.Content.ReadAsStringAsync(timeout.Token);
         }
-        catch (OperationCanceledException) when (!cancel.IsCancellationRequested)
+        catch (OperationCanceledException error) when (!cancel.IsCancellationRequested)
         {
-            throw new ApiException("The site did not answer in time.");
+            throw new ApiException(TimedOut(site, error));
         }
         catch (HttpRequestException error)
         {
@@ -391,9 +408,9 @@ internal static class ApiClient
 
             return RateLimits.FromHeaders(name => HeaderValue(response, name), DateTimeOffset.UtcNow);
         }
-        catch (OperationCanceledException) when (!cancel.IsCancellationRequested)
+        catch (OperationCanceledException error) when (!cancel.IsCancellationRequested)
         {
-            throw new ApiException("The site did not answer in time.");
+            throw new ApiException(TimedOut(site, error));
         }
         catch (HttpRequestException error)
         {
@@ -435,9 +452,9 @@ internal static class ApiClient
 
             return await response.Content.ReadAsByteArrayAsync(timeout.Token);
         }
-        catch (OperationCanceledException) when (!cancel.IsCancellationRequested)
+        catch (OperationCanceledException error) when (!cancel.IsCancellationRequested)
         {
-            throw new ApiException("The site did not answer in time.");
+            throw new ApiException(TimedOut(site, error));
         }
         catch (HttpRequestException error)
         {
