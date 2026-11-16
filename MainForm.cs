@@ -1,12 +1,22 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace GitSync;
 
 internal sealed class MainForm : Form
 {
+    [DllImport("user32.dll", EntryPoint = "SetClassLongPtrW")]
+    private static extern IntPtr SetClassLongPtr(IntPtr window, int index, IntPtr value);
+
+    private const int GCLP_HICON = -14;
+    private const int GCLP_HICONSM = -34;
+
+    /// <summary>The 16-pixel icon given to the window class; kept so it lives as long as the window.</summary>
+    private Icon? _classSmallIcon;
+
     private const int TreeWidth = 250;
     private const int FooterHeight = 60;
     private const int ButtonGap = 6;
@@ -21,7 +31,7 @@ internal sealed class MainForm : Form
     private readonly RepoList _list;
     private readonly ComboBox _sort;
     private readonly SearchBox _search;
-    private readonly Label _status;
+    private readonly StatusLine _status;
 
     /// <summary>
     /// Waits for a pause in the typing before filtering: every change rebuilds
@@ -38,7 +48,8 @@ internal sealed class MainForm : Form
     [
         (RepoOrder.Name, "Name"),
         (RepoOrder.NotDownloadedFirst, "Not Downloaded on Top"),
-        (RepoOrder.UpdatesFirst, "Updates on Top")
+        (RepoOrder.UpdatesFirst, "Updates on Top"),
+        (RepoOrder.SelectedFirst, "Selected on Top")
     ];
 
     private RepoOrder _order = RepoOrder.Name;
@@ -150,13 +161,10 @@ internal sealed class MainForm : Form
         _list.EditRequested += (_, repo) => EditRepo(repo);
         _list.MenuRequested += (_, request) => ShowMenu(request.Repo, request.ScreenPoint);
 
-        _status = new Label
+        _status = new StatusLine
         {
             Dock = DockStyle.Bottom,
             Height = 28,
-            AutoSize = false,
-            AutoEllipsis = true,
-            TextAlign = ContentAlignment.MiddleLeft,
             Padding = new Padding(14, 0, 14, 0),
             BackColor = Theme.Background,
             ForeColor = Theme.DimText
@@ -232,6 +240,25 @@ internal sealed class MainForm : Form
         catch
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Gives the window class the icon as well. The taskbar asks the window
+    /// for its icon, and a window too busy to answer in time (rebuilding a
+    /// list of 1,368 repos took seconds) got a blank button, or none while
+    /// Windows showed its "Not Responding" ghost. The class's icon is read
+    /// without asking the window, and WinForms leaves it empty.
+    /// </summary>
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+
+        if (Icon is { } icon)
+        {
+            _classSmallIcon ??= new Icon(icon, SystemInformation.SmallIconSize);
+            SetClassLongPtr(Handle, GCLP_HICON, icon.Handle);
+            SetClassLongPtr(Handle, GCLP_HICONSM, _classSmallIcon.Handle);
         }
     }
 
@@ -1358,6 +1385,7 @@ internal sealed class MainForm : Form
             _refreshMenu?.Dispose();
             _tips.Dispose();
             _closing.Dispose();
+            _classSmallIcon?.Dispose();
         }
 
         base.Dispose(disposing);

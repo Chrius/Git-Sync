@@ -48,6 +48,7 @@ internal static class Tests
         TestDownloadRoot();
         TestRepoFolders();
         TestSorting();
+        TestListWindow();
         TestSearch();
         TestRateLimits();
         TestSiteDetection();
@@ -1994,6 +1995,67 @@ internal static class Tests
         Check("order kept for the sort", "5,1", Ids(RepoSearch.Filter([repos[4], repos[0]], "zelda")));
     }
 
+    /// <summary>
+    /// The lines on screen in the repo list. Every line must show up at some
+    /// scroll position: with one control per repo, lines past 32,767 pixels
+    /// (about the 528th) never did.
+    /// </summary>
+    private static void TestListWindow()
+    {
+        Section("Repo list lines on screen");
+
+        const int Line = 62;
+        const int View = 700;
+
+        Check("all fits: no scrolling", 0, ListWindow.MaxOffset(10, Line, View));
+        Check("1,368 repos: scrolls to the last line at the bottom", (1368 * Line) - View, ListWindow.MaxOffset(1368, Line, View));
+        Check("past 65,535 pixels", true, ListWindow.MaxOffset(1368, Line, View) > 65535);
+        Check("clamped above", 0, ListWindow.Clamp(-500, 1368, Line, View));
+        Check("clamped below", ListWindow.MaxOffset(1368, Line, View), ListWindow.Clamp(int.MaxValue, 1368, Line, View));
+        Check("empty list: nothing to scroll", 0, ListWindow.Clamp(300, 0, Line, View));
+        Check("first line and how much of it is above the top", (2, 6), ListWindow.FirstVisible(130, Line));
+        Check("rows for a view: the lines that fit, plus one", 13, ListWindow.RowsNeeded(Line, View));
+        Check("rows for an exact fit", 3, ListWindow.RowsNeeded(Line, 124));
+        Check("rows for a view of nothing", 1, ListWindow.RowsNeeded(Line, 0));
+
+        // Page by page from the top to the bottom, as PageDown does; also at
+        // every offset of one line, the rows cover the whole view.
+        const int Count = 1368;
+        var seen = new HashSet<int>();
+        bool covered = true;
+
+        for (int offset = 0; ; offset = ListWindow.Clamp(offset + View, Count, Line, View))
+        {
+            (int first, int shift) = ListWindow.FirstVisible(offset, Line);
+            int rows = ListWindow.RowsNeeded(Line, View);
+
+            for (int i = 0; i < rows && first + i < Count; i++)
+            {
+                int top = (i * Line) - shift;
+
+                if (top < View && top + Line > 0)
+                {
+                    seen.Add(first + i);
+                }
+            }
+
+            if (offset == ListWindow.MaxOffset(Count, Line, View))
+            {
+                break;
+            }
+        }
+
+        for (int offset = 0; offset < Line; offset++)
+        {
+            (_, int shift) = ListWindow.FirstVisible(offset, Line);
+            covered &= (ListWindow.RowsNeeded(Line, View) * Line) - shift >= View;
+        }
+
+        Check("paging through 1,368 lines shows every one of them", Count, seen.Count);
+        Check("the last line is among them", true, seen.Contains(Count - 1));
+        Check("at any offset the rows cover the whole view", true, covered);
+    }
+
     private static void TestSorting()
     {
         Section("List order");
@@ -2033,6 +2095,25 @@ internal static class Tests
         repos[0].Selected = v1;
         Check("pinned to another version counts as update", "Charlie#5,delta#1,echo#3",
             string.Join(",", RepoSorting.Sort(repos, RepoOrder.UpdatesFirst).Take(3).Select(r => $"{r.Name}#{r.Id}")));
+
+        // Selected on Top: delta is pinned below Latest, foxtrot pinned with no
+        // Latest known yet; echo's pin is Latest itself, which changes nothing.
+        repos[2].Selected = v2;
+        repos[5].Selected = v1;
+        Check("selected on top: pins other than Latest first, then by name",
+            "delta#1,foxtrot#6,alpha#4,alpha#7,Bravo#2,Charlie#5,echo#3",
+            Names(RepoSorting.Sort(repos, RepoOrder.SelectedFirst)));
+        // "b" pins Latest's own source archive: the same version, so not on top.
+        Check("selected on top: Latest as its source archive is still Latest", "a,b",
+            string.Join(",", RepoSorting.Sort(
+                [
+                    new Repo { Id = 20, Name = "b", Latest = v2, Selected = new VersionRef("v2", Day(11, 1), VersionKind.ReleaseSource) },
+                    new Repo { Id = 21, Name = "a", Latest = v2 }
+                ],
+                RepoOrder.SelectedFirst).Select(r => r.Name)));
+        Check("selected on top: saved and read back", RepoOrder.SelectedFirst, RepoSorting.Parse(RepoOrder.SelectedFirst.ToString()));
+        repos[2].Selected = null;
+        repos[5].Selected = null;
 
         // ----- leading articles -----
 

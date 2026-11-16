@@ -34,7 +34,13 @@ internal sealed class RepoRow : Control
     private bool _showSelected;
     private DownloadProgress? _progress;
 
+    /// <summary>Height of a row before scaling for the screen; the list lays its lines out with it.</summary>
+    internal const int BaseHeight = 62;
+
     internal Repo Repo { get; private set; }
+
+    /// <summary>The download progress shown, or null.</summary>
+    internal DownloadProgress? Progress => _progress;
 
     internal event EventHandler? ActionClicked;
     internal event EventHandler? EditRequested;
@@ -74,7 +80,7 @@ internal sealed class RepoRow : Control
 
         Controls.Add(_action);
 
-        Height = Scaled(62);
+        Height = Scaled(BaseHeight);
         BackColor = Theme.Background;
         UpdateAction();
     }
@@ -103,6 +109,35 @@ internal sealed class RepoRow : Control
         UpdateAction();
         Invalidate();
     }
+
+    /// <summary>
+    /// Shows another repo in this row: the list reuses its few rows as it
+    /// scrolls. The tooltip areas belong to the repo drawn before, so they go.
+    /// </summary>
+    internal void Bind(Repo repo, DownloadProgress? progress)
+    {
+        Repo = repo;
+        _progress = progress;
+
+        // The row paints its own text; this is what screen readers (and the
+        // UI tests) read from the window.
+        Text = repo.Name;
+
+        _tipAreas.Clear();
+        ShowTip(string.Empty);
+        UpdateAction();
+        Invalidate();
+    }
+
+    /// <summary>
+    /// Lights the row up when the pointer is over it. Scrolling moves rows
+    /// under a pointer that stands still, and Windows only reports entering
+    /// and leaving when the pointer itself moves.
+    /// </summary>
+    /// <param name="underPointer">The window under the pointer: another window may cover the list.</param>
+    internal void SyncHover(IntPtr underPointer) =>
+        SetHover(Visible && IsHandleCreated
+            && (underPointer == Handle || (_action.IsHandleCreated && underPointer == _action.Handle)));
 
     /// <summary>Download progress, or null when idle.</summary>
     internal void SetProgress(DownloadProgress? progress)

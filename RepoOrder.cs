@@ -9,7 +9,13 @@ internal enum RepoOrder
     NotDownloadedFirst,
 
     /// <summary>Repos with a newer version than the one on disk first, then by name.</summary>
-    UpdatesFirst
+    UpdatesFirst,
+
+    /// <summary>
+    /// Repos pinned to a version other than Latest first, then by name. A pin
+    /// on the Latest version itself changes nothing, so it is not singled out.
+    /// </summary>
+    SelectedFirst
 }
 
 internal static class RepoSorting
@@ -58,6 +64,8 @@ internal static class RepoSorting
     {
         RepoOrder.NotDownloadedFirst => repo.Current is null,
         RepoOrder.UpdatesFirst => VersionState.StatusOf(repo) == RepoStatus.Update,
+        RepoOrder.SelectedFirst => repo.Selected is { } selected
+            && (repo.Latest is not { } latest || !VersionState.SameVersion(selected, latest)),
         _ => false
     };
 

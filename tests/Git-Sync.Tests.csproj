@@ -45,6 +45,7 @@
     <Compile Include="..\Connector.cs" />
     <Compile Include="..\VersionState.cs" />
     <Compile Include="..\RepoOrder.cs" />
+    <Compile Include="..\ListWindow.cs" />
     <Compile Include="..\RepoSearch.cs" />
     <Compile Include="..\PreferenceStore.cs" />
     <Compile Include="..\RateLimits.cs" />
