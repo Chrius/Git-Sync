@@ -119,18 +119,26 @@ internal static class FilterStore
 
         using SqliteConnection connection = Database.Open();
         using SqliteTransaction transaction = connection.BeginTransaction();
+        SetOrder([.. siblings.Select(f => f.Id)], transaction);
+        transaction.Commit();
+    }
 
-        for (int order = 0; order < siblings.Count; order++)
+    /// <summary>Numbers these sibling folders 0, 1, 2... in the order given.</summary>
+    /// <param name="transaction">The caller's transaction (see <see cref="StoreCommand"/>); null for a write of its own.</param>
+    internal static void SetOrder(IReadOnlyList<long> ids, SqliteTransaction? transaction = null)
+    {
+        using var store = new StoreCommand(transaction);
+        SqliteCommand command = store.Command;
+        command.CommandText = "UPDATE Filters SET SortOrder = $order WHERE Id = $id";
+        SqliteParameter order = command.Parameters.Add("$order", SqliteType.Integer);
+        SqliteParameter id = command.Parameters.Add("$id", SqliteType.Integer);
+
+        for (int index = 0; index < ids.Count; index++)
         {
-            using SqliteCommand command = connection.CreateCommand();
-            command.Transaction = transaction;
-            command.CommandText = "UPDATE Filters SET SortOrder = $order WHERE Id = $id";
-            command.Parameters.AddWithValue("$order", order);
-            command.Parameters.AddWithValue("$id", siblings[order].Id);
+            order.Value = index;
+            id.Value = ids[index];
             command.ExecuteNonQuery();
         }
-
-        transaction.Commit();
     }
 
     /// <summary>Deletes the folder and its subfolders (cascade). The caller checks for repos first.</summary>

@@ -2509,6 +2509,27 @@ internal static class Tests
         ExportData collected = DataTransfer.Collect(filters, repos, sites);
         Check("only folders holding repos are exported, with their parents", @"Games|Games\PC",
             string.Join("|", collected.Filters.Select(p => string.Join("\\", p))));
+
+        // The tree's order, not the ids' (folders moved up and down) nor the
+        // repos' (alphabetical: Alpha would bring NES first).
+        var ordered = new List<FilterFolder>
+        {
+            new() { Id = 1, Name = "Games" },
+            new() { Id = 2, ParentId = 1, Name = "NES", SortOrder = 2 },
+            new() { Id = 3, ParentId = 1, Name = "PC", SortOrder = 1 },
+            new() { Id = 4, ParentId = 1, Name = "Sony", SortOrder = 0 },
+            new() { Id = 5, ParentId = 2, Name = "Hacks" }
+        };
+
+        var orderedRepos = new List<Repo>
+        {
+            new() { Id = 1, Name = "Alpha", SiteId = 1, Path = "o/alpha", Folder = "Alpha", FilterId = 5 },
+            new() { Id = 2, Name = "Beta", SiteId = 1, Path = "o/beta", Folder = "Beta", FilterId = 3 },
+            new() { Id = 3, Name = "Gamma", SiteId = 1, Path = "o/gamma", Folder = "Gamma", FilterId = 4 }
+        };
+
+        Check("folders exported in the tree's order", @"Games|Games\Sony|Games\PC|Games\NES|Games\NES\Hacks",
+            string.Join("|", DataTransfer.Collect(ordered, orderedRepos, sites).Filters.Select(p => string.Join("\\", p))));
         Check("repos exported; one whose site is gone is left out", "Pokémon Tool|Loose",
             string.Join("|", collected.Repos.Select(r => r.Name)));
 
@@ -2720,6 +2741,82 @@ internal static class Tests
         Check("1,500 repositories imported", 1500, bigResult.AddedRepoIds.Count);
         Require($"1,500 repositories in one transaction take seconds, not minutes ({clock.Elapsed.TotalSeconds:0.0} s)",
             clock.Elapsed < TimeSpan.FromSeconds(20));
+
+        // ----- folder order -----
+
+        static string ChildrenOf(params string[] path)
+        {
+            List<FilterFolder> all = FilterStore.List();
+            long? id = path.Length == 0 ? null : DataTransfer.FindFolder(path, all);
+            return string.Join(",", FilterStore.Children(id, all).Select(f => f.Name));
+        }
+
+        // The repositories come alphabetically, as an export writes them,
+        // which is not the folders' order: the folders must follow the file.
+        string orderFile = "{" + Head + """
+            ,"filters":["OrderTop","Order","Order/Zeta","Order/Alpha","Order/Mid","Order/Mid/Two","Order/Mid/One"],
+             "repos":[
+               {"name":"a","site":"github.com","api":"GitHub","repository":"o/order-a","folder":"a","filter":"Order/Mid/One"},
+               {"name":"b","site":"github.com","api":"GitHub","repository":"o/order-b","folder":"b","filter":"Order/Alpha"},
+               {"name":"c","site":"github.com","api":"GitHub","repository":"o/order-c","folder":"c","filter":"Order/Zeta"},
+               {"name":"d","site":"github.com","api":"GitHub","repository":"o/order-d","folder":"d","filter":"Order/Mid/Two"},
+               {"name":"e","site":"github.com","api":"GitHub","repository":"o/order-e","folder":"e","filter":"OrderTop"}
+             ]}
+            """;
+
+        DataTransfer.Import(DataTransfer.Parse(orderFile));
+        Check("new folders in the file's order", "Zeta,Alpha,Mid", ChildrenOf("Order"));
+        Check("new subfolders in the file's order", "Two,One", ChildrenOf("Order", "Mid"));
+        Check("new top folders in the file's order, after those already here", true,
+            ChildrenOf().EndsWith(",OrderTop,Order", StringComparison.Ordinal));
+
+        // Into a tree that has some of them already: those keep their places,
+        // and each new one goes next to its neighbour in the file.
+        long merge = FilterStore.Add(null, "Merge");
+        FilterStore.Add(merge, "Mine");
+        FilterStore.Add(merge, "NES");
+
+        string mergeFile = "{" + Head + """
+            ,"filters":["Merge","Merge/PC","Merge/NES","Merge/SNES"],
+             "repos":[
+               {"name":"f","site":"github.com","api":"GitHub","repository":"o/order-f","folder":"f","filter":"Merge/SNES"},
+               {"name":"g","site":"github.com","api":"GitHub","repository":"o/order-g","folder":"g","filter":"Merge/PC"}
+             ]}
+            """;
+
+        DataTransfer.Import(DataTransfer.Parse(mergeFile));
+        Check("new folders placed by their neighbours in the file", "Mine,PC,NES,SNES", ChildrenOf("Merge"));
+
+        // Here: Sony(30, 4th in the file), Mine(20, not in it), NES(10, 2nd).
+        // New: Atari(2, 0th) before NES, PC(1, 3rd) after NES, N64(3, 5th) after Sony.
+        Check("placing among folders ordered unlike the file", "30,3,20,2,10,1",
+            string.Join(",", DataTransfer.PlaceAmong([(30, 4), (20, null), (10, 2)], [(1, 3), (2, 0), (3, 5)])));
+        Check("placing with nothing here: the file's order", "6,7,5",
+            string.Join(",", DataTransfer.PlaceAmong([], [(5, 2), (6, 0), (7, 1)])));
+
+        // Export and import again: the same order on the other side. The
+        // folders are reordered with Move Up, so their ids are not their order.
+        long trip = FilterStore.Add(null, "Trip");
+        long tripOne = FilterStore.Add(trip, "One");
+        long tripTwo = FilterStore.Add(trip, "Two");
+        long tripThree = FilterStore.Add(trip, "Three");
+        FilterStore.Shift(tripThree, -1);
+        FilterStore.Shift(tripThree, -1);
+        RepoStore.Save(new Repo { Name = "Trip a", SiteId = 1, Path = "o/trip-a", Folder = "Trip a", FilterId = tripTwo });
+        RepoStore.Save(new Repo { Name = "Trip b", SiteId = 1, Path = "o/trip-b", Folder = "Trip b", FilterId = tripOne });
+        RepoStore.Save(new Repo { Name = "Trip c", SiteId = 1, Path = "o/trip-c", Folder = "Trip c", FilterId = tripThree });
+        Check("round trip: the order here", "Three,One,Two", ChildrenOf("Trip"));
+
+        string tripFile = DataTransfer.ToJson(
+            DataTransfer.Collect(FilterStore.List(), [.. RepoStore.List().Where(r => r.Path.StartsWith("o/trip-", StringComparison.Ordinal))], SiteStore.List()),
+            DateTimeOffset.UtcNow);
+
+        // The same list under another name, as another install would see it.
+        DataTransfer.Import(DataTransfer.Parse(tripFile
+            .Replace("\"Trip", "\"Trip Copy", StringComparison.Ordinal)
+            .Replace("o/trip-", "o/trip-copy-", StringComparison.Ordinal)));
+
+        Check("round trip: the same order there", "Three,One,Two", ChildrenOf("Trip Copy"));
 
         // ----- exporting changes nothing -----
 

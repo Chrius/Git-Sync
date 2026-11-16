@@ -13,7 +13,10 @@ internal sealed record ExportedRepo(
     IReadOnlyList<string> Filter, bool KeepPrevious, int KeepVersions = 0);
 
 /// <summary>The content of an export file.</summary>
-/// <param name="Filters">Folders as names from the root, parents before children.</param>
+/// <param name="Filters">
+/// Folders as names from the root, parents before children, in the tree's
+/// order: an import creates the folders it needs in this order.
+/// </param>
 internal sealed record ExportData(List<IReadOnlyList<string>> Filters, List<ExportedRepo> Repos);
 
 /// <summary>What an import changed.</summary>
@@ -459,6 +462,8 @@ internal static class DataTransfer
         using SqliteConnection connection = Database.Open();
         using SqliteTransaction transaction = connection.BeginTransaction();
 
+        var created = new HashSet<long>();
+
         long? EnsureFolder(IReadOnlyList<string> path)
         {
             long? parent = null;
@@ -472,6 +477,7 @@ internal static class DataTransfer
                 {
                     match = new FilterFolder { Id = FilterStore.Add(parent, name, transaction), ParentId = parent, Name = name };
                     filters.Add(match);
+                    created.Add(match.Id);
                     foldersAdded++;
                 }
 
@@ -547,8 +553,96 @@ internal static class DataTransfer
             added.Add(repo.Id);
         }
 
+        PlaceCreated(data, filters, created, transaction);
         transaction.Commit();
         progress?.Report(handled);
         return new ImportResult(added, alreadyThere, foldersAdded, leftOut);
+    }
+
+    /// <summary>
+    /// Puts the folders an import created in the file's order. Each one was
+    /// added at the end of its siblings when its first repository came up,
+    /// and the repositories come alphabetically, not by folder: "Xbox 360"
+    /// landed before "Xbox" whatever order the file gave them. Folders that
+    /// were already here keep their places, since importing only adds.
+    /// </summary>
+    private static void PlaceCreated(
+        ExportData data, List<FilterFolder> filters, HashSet<long> created, SqliteTransaction transaction)
+    {
+        if (created.Count == 0)
+        {
+            return;
+        }
+
+        var fileOrder = new Dictionary<string, int>();
+
+        for (int index = 0; index < data.Filters.Count; index++)
+        {
+            fileOrder.TryAdd(Key(data.Filters[index]), index);
+        }
+
+        foreach (long? parentId in filters.Where(f => created.Contains(f.Id)).Select(f => f.ParentId).Distinct().ToList())
+        {
+            List<string> parentPath = FilterStore.PathOf(parentId, filters);
+            int? Rank(FilterFolder f) => fileOrder.TryGetValue(Key([.. parentPath, f.Name]), out int rank) ? rank : null;
+
+            // Children sorts by SortOrder: right for the folders already here,
+            // which is all it is used for — the new ones are placed by rank.
+            List<FilterFolder> siblings = FilterStore.Children(parentId, filters);
+
+            List<long> order = PlaceAmong(
+                [.. siblings.Where(f => !created.Contains(f.Id)).Select(f => (f.Id, Rank(f)))],
+                [.. siblings.Where(f => created.Contains(f.Id)).Select(f => (f.Id, Rank(f) ?? int.MaxValue))]);
+
+            FilterStore.SetOrder(order, transaction);
+        }
+    }
+
+    /// <summary>
+    /// The order of one folder's children after an import. The ones already
+    /// here stay as they were; each new one goes right after its nearest
+    /// sibling that comes before it in the file, or, with none, right before
+    /// its nearest one after it, or else at the end.
+    /// </summary>
+    /// <param name="existing">The children already here, in their order, with their place in the file (null when the file does not list them).</param>
+    /// <param name="added">The children the import created, with their place in the file.</param>
+    internal static List<long> PlaceAmong(IReadOnlyList<(long Id, int? Rank)> existing, IReadOnlyList<(long Id, int Rank)> added)
+    {
+        List<(long Id, int? Rank)> result = [.. existing];
+
+        foreach ((long id, int rank) in added.OrderBy(a => a.Rank))
+        {
+            int at = result.Count;
+            int? previous = null;
+
+            // "<=": two the file does not list (both int.MaxValue) stay in the
+            // order they were created; ranks from the file never tie.
+            for (int i = 0; i < result.Count; i++)
+            {
+                if (result[i].Rank is { } other && other <= rank && (previous is null || other > previous))
+                {
+                    previous = other;
+                    at = i + 1;
+                }
+            }
+
+            if (previous is null)
+            {
+                int? next = null;
+
+                for (int i = 0; i < result.Count; i++)
+                {
+                    if (result[i].Rank is { } other && other > rank && (next is null || other < next))
+                    {
+                        next = other;
+                        at = i;
+                    }
+                }
+            }
+
+            result.Insert(at, (id, rank));
+        }
+
+        return [.. result.Select(r => r.Id)];
     }
 }
