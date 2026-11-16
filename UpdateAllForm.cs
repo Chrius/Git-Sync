@@ -1,24 +1,39 @@
 using System.ComponentModel;
 using System.Drawing;
+using System.Globalization;
 using System.Windows.Forms;
 
 namespace GitSync;
 
 /// <summary>
-/// Goes through every repo with a newer version, one at a time: for each, the
-/// user picks the files and clicks Update, or clicks Ignore to skip it this
-/// time (it comes back on the next Update All).
+/// Goes through every repo with a newer version: for each, the user picks the
+/// files and clicks Update, or clicks Ignore to skip it this time (it comes
+/// back on the next Update All).
+///
+/// Update does not wait for the download: the files join a queue that
+/// downloads them one repo at a time (see <see cref="DownloadQueue{T}"/>), and
+/// the window moves on to the next repo at once. Big releases took minutes
+/// each, and the user had to sit through every one of them before choosing
+/// the next repo's files.
 /// </summary>
 internal sealed class UpdateAllForm : Form
 {
-    private enum Step { Pending, Choosing, Downloading, Updated, Ignored, Failed }
+    private enum Step { Pending, Choosing, Waiting, Downloading, Updated, Ignored, Failed }
 
     private sealed class Item(Repo repo, Site? site)
     {
         public Repo Repo { get; } = repo;
         public Site? Site { get; } = site;
         public Step Step { get; set; } = Step.Pending;
-        public string Error { get; set; } = string.Empty;
+
+        /// <summary>Why it failed, or the warnings of a download that worked (old files in use).</summary>
+        public string Problem { get; set; } = string.Empty;
+
+        // What Update chose, kept for when its turn in the queue comes.
+        public Release? Release { get; set; }
+        public List<ReleaseFile> Chosen { get; set; } = [];
+
+        public DownloadProgress? Progress { get; set; }
     }
 
     private const int Edge = 16;
@@ -29,15 +44,19 @@ internal sealed class UpdateAllForm : Form
     private readonly Label _title;
     private readonly FileChecklist _files;
     private readonly ProgressStrip _progress;
-    private readonly Label _note;
+    private readonly Label _status;
+    private readonly Label _problem;
     private readonly FlatButton _update;
     private readonly Button _ignore;
     private readonly Button _close;
+    private readonly ToolTip _tips = new();
     private readonly CancellationTokenSource _cancel = new();
+    private readonly DownloadQueue<Item> _downloads;
 
     private int _index = -1;
     private Release? _release;
-    private bool _busy;
+    private Item? _downloading;
+    private int _tipIndex = -1;
 
     /// <summary>True when at least one repo was updated, so the main list reloads.</summary>
     internal bool AnyUpdated { get; private set; }
@@ -46,6 +65,8 @@ internal sealed class UpdateAllForm : Form
     {
         _filters = filters;
         _items = [.. repos.Select(r => new Item(r, sites.FirstOrDefault(s => s.Id == r.SiteId)))];
+        _downloads = new DownloadQueue<Item>(DownloadAsync);
+        _downloads.Drained += (_, _) => OnDownloadsDone();
 
         Text = "Update All";
         ShowIcon = false;
@@ -85,6 +106,8 @@ internal sealed class UpdateAllForm : Form
             TabStop = false
         };
         _queue.DrawItem += DrawQueueItem;
+        _queue.MouseMove += (_, e) => ShowRowTip(_queue.IndexFromPoint(e.Location));
+        _queue.MouseLeave += (_, _) => ShowRowTip(-1);
         DarkControls.UseDarkScrollbars(_queue);
 
         foreach (Item item in _items)
@@ -111,13 +134,26 @@ internal sealed class UpdateAllForm : Form
         _progress = new ProgressStrip { Bounds = new Rectangle(Edge, 456, width, 6) };
         Controls.Add(_progress);
 
-        _note = new Label
+        // Two lines: what is downloading now, and the last thing that went
+        // wrong. One line for both would let the next download's progress
+        // wipe a failure before it was read.
+        _status = new Label
         {
             AutoSize = false,
-            Bounds = new Rectangle(Edge, 468, width, 36),
-            ForeColor = Theme.DimText
+            Bounds = new Rectangle(Edge, 466, width, 18),
+            ForeColor = Theme.DimText,
+            AutoEllipsis = true
         };
-        Controls.Add(_note);
+        Controls.Add(_status);
+
+        _problem = new Label
+        {
+            AutoSize = false,
+            Bounds = new Rectangle(Edge, 486, width, 18),
+            ForeColor = Theme.Error,
+            AutoEllipsis = true
+        };
+        Controls.Add(_problem);
 
         int buttonsTop = ClientSize.Height - Edge - 30;
 
@@ -140,7 +176,7 @@ internal sealed class UpdateAllForm : Form
 
         CancelButton = _close;
 
-        _files.SelectionChanged += (_, _) => _update.Enabled = !_busy && _release is not null && _files.CheckedFiles.Count > 0;
+        _files.SelectionChanged += (_, _) => _update.Enabled = _release is not null && _files.CheckedFiles.Count > 0;
     }
 
     protected override async void OnShown(EventArgs e)
@@ -161,7 +197,15 @@ internal sealed class UpdateAllForm : Form
 
         if (index >= _items.Count)
         {
-            Finish();
+            if (_downloads.Remaining > 0)
+            {
+                ShowWaiting();
+            }
+            else
+            {
+                Finish();
+            }
+
             return;
         }
 
@@ -183,9 +227,11 @@ internal sealed class UpdateAllForm : Form
 
         _files.SetMessage("Loading files…");
 
+        Release release;
+
         try
         {
-            _release = await ApiClient.GetReleaseAsync(item.Site, item.Repo, target, _cancel.Token);
+            release = await ApiClient.GetReleaseAsync(item.Site, item.Repo, target, _cancel.Token);
         }
         catch (ApiException error)
         {
@@ -197,7 +243,7 @@ internal sealed class UpdateAllForm : Form
             return;
         }
 
-        List<ReleaseFile> files = _release.Offered(PreferenceStore.ShowSource());
+        List<ReleaseFile> files = release.Offered(PreferenceStore.ShowSource());
 
         if (files.Count == 0)
         {
@@ -205,8 +251,9 @@ internal sealed class UpdateAllForm : Form
             return;
         }
 
+        _release = release;
         _files.SetFiles(files, DownloadPaths.PreChecked(
-            files, _release.ToVersion().DisplayTag, item.Repo.CurrentFiles, item.Repo.Current?.DisplayTag));
+            files, release.ToVersion().DisplayTag, item.Repo.CurrentFiles, item.Repo.Current?.DisplayTag));
 
         _ignore.Enabled = true;
         _update.Enabled = _files.CheckedFiles.Count > 0;
@@ -216,14 +263,14 @@ internal sealed class UpdateAllForm : Form
     private void Fail(Item item, string error)
     {
         item.Step = Step.Failed;
-        item.Error = error;
+        item.Problem = error;
         _files.SetMessage(error);
-        _note.Text = $"{item.Repo.Name}: {error}";
-        _note.ForeColor = Theme.Error;
+        ShowProblem(item, Theme.Error);
         _ignore.Enabled = true;
         _queue.Invalidate();
     }
 
+    /// <summary>Puts the chosen files in the download queue and moves on to the next repo at once.</summary>
     private async Task UpdateAsync()
     {
         if (_index < 0 || _index >= _items.Count || _release is null)
@@ -239,68 +286,11 @@ internal sealed class UpdateAllForm : Form
             return;
         }
 
-        _busy = true;
-        _update.Enabled = false;
-        _ignore.Enabled = false;
-        _files.Enabled = false;
-        item.Step = Step.Downloading;
-        _queue.Invalidate();
-        _note.Text = string.Empty;
-
-        // Reports arrive late through the message queue; the last one must not
-        // refill the bar after it was reset for the next item.
-        bool finished = false;
-        var progress = new Progress<DownloadProgress>(value =>
-        {
-            if (finished)
-            {
-                return;
-            }
-
-            _progress.Value = value.Fraction ?? 0;
-
-            if (value.Fraction is null && value.Bytes > 0)
-            {
-                _note.ForeColor = Theme.DimText;
-                _note.Text = $"Downloading… {FileChecklist.FormatSize(value.Bytes)}";
-            }
-        });
-
-        try
-        {
-            // Read again: Current and its files may have changed since the list was built.
-            Repo fresh = RepoStore.Get(item.Repo.Id) ?? item.Repo;
-            DownloadOutcome outcome = await Downloader.DownloadAsync(
-                item.Site, fresh, _filters, _release, chosen, progress, _cancel.Token);
-
-            item.Step = Step.Updated;
-            AnyUpdated = true;
-            _note.Text = string.Empty;
-
-            if (outcome.Warnings.Count > 0)
-            {
-                _note.Text = string.Join("\n", outcome.Warnings);
-                _note.ForeColor = Theme.Amber;
-            }
-        }
-        catch (ApiException error)
-        {
-            item.Step = Step.Failed;
-            item.Error = error.Message;
-            _note.Text = $"{item.Repo.Name}: {error.Message}";
-            _note.ForeColor = Theme.Error;
-        }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-        finally
-        {
-            finished = true;
-            _busy = false;
-            _files.Enabled = true;
-            _progress.Value = 0;
-        }
+        item.Release = _release;
+        item.Chosen = chosen;
+        item.Step = Step.Waiting;
+        _downloads.Add(item, _cancel.Token);
+        ShowDownloadStatus();
 
         await ShowItemAsync(_index + 1);
     }
@@ -322,14 +312,154 @@ internal sealed class UpdateAllForm : Form
         await ShowItemAsync(_index + 1);
     }
 
+    /// <summary>One repo's turn in the queue.</summary>
+    private async Task DownloadAsync(Item item, CancellationToken cancel)
+    {
+        item.Step = Step.Downloading;
+        item.Progress = new DownloadProgress(0, 0);
+        _downloading = item;
+        ShowDownloadStatus();
+
+        // Reports arrive late through the message queue; the last one must not
+        // bring back a download that has already ended.
+        bool finished = false;
+        var progress = new Progress<DownloadProgress>(value =>
+        {
+            if (!finished)
+            {
+                item.Progress = value;
+                ShowDownloadStatus();
+            }
+        });
+
+        try
+        {
+            // Read now, not when Update was clicked: Current and its files may
+            // have changed since the list was built.
+            Repo fresh = RepoStore.Get(item.Repo.Id) ?? item.Repo;
+            DownloadOutcome outcome = await Downloader.DownloadAsync(
+                item.Site!, fresh, _filters, item.Release!, item.Chosen, progress, cancel);
+
+            item.Step = Step.Updated;
+            AnyUpdated = true;
+
+            if (outcome.Warnings.Count > 0)
+            {
+                item.Problem = string.Join(" ", outcome.Warnings);
+                ShowProblem(item, Theme.Amber);
+            }
+        }
+        catch (ApiException error)
+        {
+            item.Step = Step.Failed;
+            item.Problem = error.Message;
+            ShowProblem(item, Theme.Error);
+        }
+        finally
+        {
+            finished = true;
+            item.Progress = null;
+            _downloading = null;
+            ShowDownloadStatus();
+        }
+    }
+
+    private void OnDownloadsDone()
+    {
+        // Every repo already went through: the downloads were all that was left.
+        if (!IsDisposed && _index >= _items.Count)
+        {
+            Finish();
+        }
+    }
+
+    private void ShowWaiting()
+    {
+        _title.Text = "Every repository has been gone through.";
+        _files.SetMessage("The chosen files are still downloading.\nThe summary appears here when they are done.");
+    }
+
+    /// <summary>The progress line and bar follow the download running now.</summary>
+    private void ShowDownloadStatus()
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        int waiting = _downloads.Waiting;
+        string more = waiting switch
+        {
+            0 => string.Empty,
+            1 => "  ·  1 more waiting",
+            _ => $"  ·  {waiting} more waiting"
+        };
+
+        if (_downloading is { Progress: var progress } item)
+        {
+            _status.Text = $"Downloading {item.Repo.Name}: {Amount(progress)}{more}";
+            _progress.Value = progress?.Fraction ?? 0;
+        }
+        else
+        {
+            _status.Text = string.Empty;
+            _progress.Value = 0;
+        }
+
+        _queue.Invalidate();
+    }
+
+    /// <summary>"45%", or how much has arrived when the server does not say the size.</summary>
+    private static string Amount(DownloadProgress? progress) => progress switch
+    {
+        { Fraction: { } fraction } when fraction > 0 => string.Create(CultureInfo.InvariantCulture, $"{(int)(fraction * 100)}%"),
+        { Bytes: > 0 } => FileChecklist.FormatSize(progress.Value.Bytes),
+        _ => "starting…"
+    };
+
+    private void ShowProblem(Item item, Color color)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        string text = $"{item.Repo.Name}: {item.Problem}";
+        _problem.Text = text;
+        _problem.ForeColor = color;
+        _tips.SetToolTip(_problem, text);
+    }
+
+    /// <summary>Hovering a failed row, or one with warnings, shows what happened.</summary>
+    private void ShowRowTip(int index)
+    {
+        if (index == _tipIndex)
+        {
+            return;
+        }
+
+        _tipIndex = index;
+        string? text = index >= 0 && index < _items.Count && _items[index].Problem.Length > 0
+            ? _items[index].Problem
+            : null;
+
+        _tips.SetToolTip(_queue, text);
+    }
+
     private void Finish()
     {
         int updated = _items.Count(i => i.Step == Step.Updated);
         int ignored = _items.Count(i => i.Step == Step.Ignored);
-        int failed = _items.Count(i => i.Step == Step.Failed);
+        List<Item> failed = [.. _items.Where(i => i.Step == Step.Failed)];
 
-        _title.Text = $"Done: {updated} updated, {ignored} ignored, {failed} failed.";
-        _files.SetMessage("Nothing left to go through.");
+        _title.Text = $"Done: {updated} updated, {ignored} ignored, {failed.Count} failed.";
+
+        // The failures collected in one place: the problem line only kept the last one.
+        const int Shown = 8;
+        _files.SetMessage(failed.Count == 0
+            ? "Nothing left to go through."
+            : "Failed:\n" + string.Join("\n", failed.Take(Shown).Select(i => $"{i.Repo.Name}: {i.Problem}"))
+              + (failed.Count > Shown ? $"\n…and {failed.Count - Shown} more (hover their lines above)." : string.Empty));
         _queue.Invalidate();
 
         AcceptButton = _close;
@@ -354,7 +484,8 @@ internal sealed class UpdateAllForm : Form
         const TextFormatFlags Flags = TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
                                       TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
 
-        int statusWidth = 110;
+        // Wide enough for "Downloading 100%".
+        int statusWidth = 130;
         int versionsWidth = 210;
         Rectangle b = e.Bounds;
 
@@ -370,7 +501,10 @@ internal sealed class UpdateAllForm : Form
         (string text, Color color) = item.Step switch
         {
             Step.Choosing => ("Choose files", Theme.Text),
-            Step.Downloading => ("Downloading", Theme.AccentHover),
+            Step.Waiting => ("Waiting", Theme.Text),
+            Step.Downloading => ("Downloading " + Amount(item.Progress), Theme.AccentHover),
+            // Old files that could not be deleted: the line's tooltip says which.
+            Step.Updated when item.Problem.Length > 0 => ("Updated", Theme.Amber),
             Step.Updated => ("Updated", Theme.Success),
             Step.Ignored => ("Ignored", Theme.DimText),
             Step.Failed => ("Failed", Theme.Error),
@@ -382,11 +516,14 @@ internal sealed class UpdateAllForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (_busy)
+        int unfinished = _downloads.Remaining;
+
+        if (unfinished > 0)
         {
             DialogResult answer = DarkMessageBox.Show(this,
-                "A download is in progress. Stop it and close?", Text,
-                MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                (unfinished == 1 ? "A download is not finished yet." : $"{unfinished} downloads are not finished yet.")
+                + " Stop and close?\n\nRepositories already updated stay updated.",
+                Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
 
             if (answer != DialogResult.Yes)
             {
@@ -395,6 +532,7 @@ internal sealed class UpdateAllForm : Form
             }
         }
 
+        // The download running stops and removes its .part files; the waiting ones never start.
         _cancel.Cancel();
         base.OnFormClosing(e);
     }
@@ -404,6 +542,7 @@ internal sealed class UpdateAllForm : Form
         if (disposing)
         {
             _cancel.Dispose();
+            _tips.Dispose();
         }
 
         base.Dispose(disposing);

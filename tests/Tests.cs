@@ -43,6 +43,7 @@ internal static class Tests
         TestOldFolder();
         TestVersionHistory();
         TestDownloadSequence();
+        TestDownloadQueue();
         TestFileCheck();
         TestDownloadRoot();
         TestRepoFolders();
@@ -2468,6 +2469,125 @@ internal static class Tests
         public List<int> Values { get; } = [];
 
         public void Report(int value) => Values.Add(value);
+    }
+
+    private static void TestDownloadQueue() => TestDownloadQueueAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Update All's queue: jobs stand for downloads, each held open until the
+    /// test lets it end, so what runs when can be checked step by step.
+    /// </summary>
+    private static async Task TestDownloadQueueAsync()
+    {
+        Section("Download queue (Update All)");
+
+        static async Task<bool> Until(Func<bool> condition)
+        {
+            for (var clock = Stopwatch.StartNew(); clock.Elapsed < TimeSpan.FromSeconds(5); await Task.Delay(10))
+            {
+                if (condition())
+                {
+                    return true;
+                }
+            }
+
+            return condition();
+        }
+
+        var log = new List<string>();
+        var gates = new Dictionary<string, TaskCompletionSource>();
+        int running = 0;
+        int most = 0;
+        int drained = 0;
+
+        string Log()
+        {
+            lock (log)
+            {
+                return string.Join("|", log);
+            }
+        }
+
+        TaskCompletionSource Gate(string job)
+        {
+            lock (gates)
+            {
+                if (!gates.TryGetValue(job, out TaskCompletionSource? gate))
+                {
+                    gates[job] = gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                }
+
+                return gate;
+            }
+        }
+
+        async Task Job(string job, CancellationToken cancel)
+        {
+            lock (log)
+            {
+                log.Add("start " + job);
+                most = Math.Max(most, Interlocked.Increment(ref running));
+            }
+
+            try
+            {
+                await Gate(job).Task.WaitAsync(cancel);
+            }
+            finally
+            {
+                lock (log)
+                {
+                    Interlocked.Decrement(ref running);
+                    log.Add("end " + job);
+                }
+            }
+        }
+
+        var queue = new DownloadQueue<string>(Job);
+        queue.Drained += (_, _) => Interlocked.Increment(ref drained);
+        using var cancel = new CancellationTokenSource();
+
+        queue.Add("A", cancel.Token);
+        queue.Add("B", cancel.Token);
+        queue.Add("C", cancel.Token);
+        Check("the first starts at once", "start A", Log());
+        Check("the others wait", 2, queue.Waiting);
+        Check("remaining counts the one running", 3, queue.Remaining);
+
+        Gate("A").SetResult();
+        Require("the next starts when the first ends", await Until(() => Log().EndsWith("start B", StringComparison.Ordinal)));
+
+        // Update clicked on another repo while B downloads: it joins the end.
+        queue.Add("D", cancel.Token);
+        Check("added while one runs: waits behind the rest", 2, queue.Waiting);
+        Gate("B").SetResult();
+        Gate("C").SetResult();
+        Require("everything added runs", await Until(() => Log().EndsWith("start D", StringComparison.Ordinal)));
+        Check("in the order added, one after another", "start A|end A|start B|end B|start C|end C|start D", Log());
+        Check("not drained while one still runs", 0, drained);
+
+        Gate("D").SetResult();
+        Require("drained after the last", await Until(() => drained == 1));
+        Check("never two at once", 1, most);
+        Check("nothing remaining", 0, queue.Remaining);
+
+        Gate("E").SetResult();
+        queue.Add("E", cancel.Token);
+        Require("added after draining: runs again", await Until(() => drained == 2));
+        Check("the late one ran", true, Log().EndsWith("start E|end E", StringComparison.Ordinal));
+
+        // Closing the window: the running job stops, the waiting ones never start.
+        lock (log)
+        {
+            log.Clear();
+        }
+
+        queue.Add("F", cancel.Token);
+        queue.Add("G", cancel.Token);
+        await cancel.CancelAsync();
+        Require("cancelled: the queue empties", await Until(() => queue.Remaining == 0));
+        Check("cancelled: the running one ends, the waiting one never starts", "start F|end F", Log());
+        Check("cancelled: no drained", 2, drained);
     }
 
     private static void TestDataTransfer()
