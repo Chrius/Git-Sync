@@ -32,6 +32,7 @@ internal sealed class RepoForm : Form
     private readonly Button _chooseFolder;
     private readonly ComboBox _filter;
     private readonly CheckBox _keepPrevious;
+    private readonly CheckBox _ignoreOnRefresh;
     private readonly Panel _keepFrame;
     private readonly TextBox _keepVersions;
     private readonly Label _keepLabel;
@@ -88,7 +89,8 @@ internal sealed class RepoForm : Form
 
         Text = editing is null ? "Add Repository" : "Edit Repository";
         ShowIcon = false;
-        ClientSize = new Size(480, 398);
+        // 26 more than before "Ignore on refresh": the same gap above the buttons.
+        ClientSize = new Size(480, 424);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -164,6 +166,15 @@ internal sealed class RepoForm : Form
         _tips.SetToolTip(_keepVersions, keepTip);
         _tips.SetToolTip(_keepLabel, keepTip);
 
+        _ignoreOnRefresh = new CheckBox
+        {
+            Text = "Ignore on refresh",
+            AutoSize = true,
+            Location = new Point(Edge, _keepPrevious.Top + 26),
+            TabIndex = 9
+        };
+        Controls.Add(_ignoreOnRefresh);
+
         // Digits only: typed ones through KeyPress, pasted ones cleaned on TextChanged.
         _keepVersions.KeyPress += (_, e) =>
         {
@@ -222,6 +233,7 @@ internal sealed class RepoForm : Form
             SelectFilter(editing.FilterId);
             _keepPrevious.Checked = editing.KeepPrevious;
             _keepVersions.Text = editing.KeepVersions.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _ignoreOnRefresh.Checked = editing.IgnoreOnRefresh;
 
             // Keeps following Name and Repository only if it was never changed by hand.
             string suggestion = RepoAddress.SuggestFolder(editing.Name, editing.Path);
@@ -689,6 +701,7 @@ internal sealed class RepoForm : Form
         repo.FilterId = filterId;
         repo.KeepPrevious = _keepPrevious.Checked;
         repo.KeepVersions = KeepVersions();
+        repo.IgnoreOnRefresh = _ignoreOnRefresh.Checked;
 
         try
         {

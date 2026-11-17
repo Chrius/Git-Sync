@@ -17,7 +17,7 @@ internal static class RepoStore
         LatestTag, LatestDate, LatestKind,
         CurrentTag, CurrentDate, CurrentKind,
         SelectedTag, SelectedDate, SelectedKind,
-        CurrentFiles, Error, CheckedAt, KeepPrevious, KeepVersions
+        CurrentFiles, Error, CheckedAt, KeepPrevious, KeepVersions, IgnoreOnRefresh
         """;
 
     internal static List<Repo> List()
@@ -63,7 +63,8 @@ internal static class RepoStore
         Error = reader.GetString(16),
         CheckedAt = Database.ReadDate(reader, 17),
         KeepPrevious = reader.GetInt64(18) != 0,
-        KeepVersions = reader.GetInt32(19)
+        KeepVersions = reader.GetInt32(19),
+        IgnoreOnRefresh = reader.GetInt64(20) != 0
     };
 
     /// <summary>Tag, date and kind live in three consecutive columns.</summary>
@@ -99,14 +100,14 @@ internal static class RepoStore
 
         command.CommandText = repo.Id == 0
             ? """
-              INSERT INTO Repos (Name, SiteId, Path, Folder, FilterId, KeepPrevious, KeepVersions)
-              VALUES ($name, $site, $path, $folder, $filter, $keep, $versions);
+              INSERT INTO Repos (Name, SiteId, Path, Folder, FilterId, KeepPrevious, KeepVersions, IgnoreOnRefresh)
+              VALUES ($name, $site, $path, $folder, $filter, $keep, $versions, $ignore);
               SELECT last_insert_rowid();
               """
             : """
               UPDATE Repos SET Name = $name, SiteId = $site, Path = $path,
                                Folder = $folder, FilterId = $filter, KeepPrevious = $keep,
-                               KeepVersions = $versions
+                               KeepVersions = $versions, IgnoreOnRefresh = $ignore
                WHERE Id = $id;
               SELECT $id;
               """;
@@ -119,6 +120,7 @@ internal static class RepoStore
         command.Parameters.AddWithValue("$filter", Database.NullableId(repo.FilterId));
         command.Parameters.AddWithValue("$keep", repo.KeepPrevious ? 1 : 0);
         command.Parameters.AddWithValue("$versions", Math.Max(0, repo.KeepVersions));
+        command.Parameters.AddWithValue("$ignore", repo.IgnoreOnRefresh ? 1 : 0);
 
         repo.Id = Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture);
         return repo.Id;

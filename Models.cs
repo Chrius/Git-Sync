@@ -82,6 +82,13 @@ internal sealed class Repo
     /// </summary>
     public int KeepVersions { get; set; }
 
+    /// <summary>
+    /// "Ignore on refresh": Refresh (and the automatic check) leave it out.
+    /// For a repository deleted from its site, which would otherwise be asked
+    /// for again, and fail, on every refresh. It still counts in the list.
+    /// </summary>
+    public bool IgnoreOnRefresh { get; set; }
+
     public VersionRef? Latest { get; set; }
     public VersionRef? Current { get; set; }
 

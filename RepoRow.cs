@@ -228,13 +228,15 @@ internal sealed class RepoRow : Control
         int pathWidth = DrawLine(g, Repo.Path, SmallFont, Theme.DimText,
             new Rectangle(left, pathTop, Math.Max(0, leftWidth - markSize - Scaled(8)), smallHeight));
 
-        if (Repo.Error.Length > 0)
+        // Red: the last check got no answer. Grey: left out of refresh, which
+        // takes the place of the red one (it is usually why it was ignored).
+        if (Repo.IgnoreOnRefresh || Repo.Error.Length > 0)
         {
             var mark = new Rectangle(
                 left + pathWidth + Scaled(7), pathTop + ((smallHeight - markSize) / 2) + 1, markSize, markSize);
 
-            DrawErrorMark(g, mark);
-            _tipAreas.Add((Rectangle.Inflate(mark, Scaled(5), Scaled(5)), Repo.Error));
+            DrawMark(g, mark, Repo.IgnoreOnRefresh ? Theme.DimText : Theme.Error);
+            _tipAreas.Add((Rectangle.Inflate(mark, Scaled(5), Scaled(5)), MarkTip(Repo)));
         }
 
         // ----- right: version columns -----
@@ -345,12 +347,17 @@ internal sealed class RepoRow : Control
         g.SmoothingMode = SmoothingMode.None;
     }
 
-    /// <summary>The red X after the path: the last check got no answer from the site.</summary>
-    private static void DrawErrorMark(Graphics g, Rectangle area)
+    /// <summary>The hover text of the X: the error, or that the repo is ignored (with its last error, if any).</summary>
+    internal static string MarkTip(Repo repo) => repo.IgnoreOnRefresh
+        ? repo.Error.Length > 0 ? $"Ignored on refresh.\nLast check: {repo.Error}" : "Ignored on refresh."
+        : repo.Error;
+
+    /// <summary>The X after the path: red when the last check got no answer, grey when ignored on refresh.</summary>
+    private static void DrawMark(Graphics g, Rectangle area, Color color)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
-        using var pen = new Pen(Theme.Error, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var pen = new Pen(color, 2f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
         g.DrawLine(pen, area.Left, area.Top, area.Right, area.Bottom);
         g.DrawLine(pen, area.Right, area.Top, area.Left, area.Bottom);
 

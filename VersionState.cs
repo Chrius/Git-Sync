@@ -23,6 +23,9 @@ internal static class VersionState
     /// <summary>The version the button downloads: the pinned one when there is a pin, otherwise Latest.</summary>
     internal static VersionRef? Target(Repo repo) => repo.Selected ?? repo.Latest;
 
+    /// <summary>The repos a refresh checks: all but those set to "Ignore on refresh".</summary>
+    internal static List<Repo> ToRefresh(IEnumerable<Repo> repos) => [.. repos.Where(r => !r.IgnoreOnRefresh)];
+
     internal static RepoStatus StatusOf(Repo repo)
     {
         VersionRef? target = Target(repo);

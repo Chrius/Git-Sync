@@ -99,6 +99,7 @@ internal static class Database
         // column, and CREATE TABLE IF NOT EXISTS above does not add it to them.
         EnsureColumn(connection, "Repos", "KeepPrevious", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "Repos", "KeepVersions", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "Repos", "IgnoreOnRefresh", "INTEGER NOT NULL DEFAULT 0");
 
         EnsureSites(connection);
     }

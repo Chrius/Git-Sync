@@ -10,7 +10,7 @@ namespace GitSync;
 /// <param name="Filter">The folder it sits in, as names from the root; empty when it is in none.</param>
 internal sealed record ExportedRepo(
     string Name, string Host, ApiType Type, string Path, string Folder,
-    IReadOnlyList<string> Filter, bool KeepPrevious, int KeepVersions = 0);
+    IReadOnlyList<string> Filter, bool KeepPrevious, int KeepVersions = 0, bool IgnoreOnRefresh = false);
 
 /// <summary>The content of an export file.</summary>
 /// <param name="Filters">
@@ -89,7 +89,8 @@ internal static class DataTransfer
             List<string> filter = repo.FilterId is { } id ? FilterStore.PathOf(id, filters) : [];
 
             data.Repos.Add(new ExportedRepo(
-                repo.Name, site.Host, site.Type, repo.Path, repo.Folder, filter, repo.KeepPrevious, repo.KeepVersions));
+                repo.Name, site.Host, site.Type, repo.Path, repo.Folder, filter, repo.KeepPrevious, repo.KeepVersions,
+                repo.IgnoreOnRefresh));
 
             for (long? current = repo.FilterId; current is { } folderId && used.Add(folderId);)
             {
@@ -156,6 +157,9 @@ internal static class DataTransfer
                 // repo. Reading still takes a missing one (files from before
                 // the number existed) as 0, keep them all.
                 json.WriteNumber("versionsToKeep", repo.KeepVersions);
+
+                // Always as well; a file from before it existed reads as false.
+                json.WriteBoolean("ignoreOnRefresh", repo.IgnoreOnRefresh);
                 json.WriteEndObject();
             }
 
@@ -293,7 +297,10 @@ internal static class DataTransfer
                 ? Math.Min(count, MaxVersionsToKeep)
                 : 0;
 
-        return new ExportedRepo(name, host, type, path, folder, filter, keep, versions);
+        bool ignore = e.TryGetProperty("ignoreOnRefresh", out JsonElement ignoreElement)
+            && ignoreElement.ValueKind == JsonValueKind.True;
+
+        return new ExportedRepo(name, host, type, path, folder, filter, keep, versions, ignore);
     }
 
     /// <summary>Adds a folder and its parents to the file's list, each once, parents first.</summary>
@@ -546,7 +553,8 @@ internal static class DataTransfer
                 Folder = entry.Folder,
                 FilterId = filterId,
                 KeepPrevious = entry.KeepPrevious,
-                KeepVersions = entry.KeepVersions
+                KeepVersions = entry.KeepVersions,
+                IgnoreOnRefresh = entry.IgnoreOnRefresh
             };
 
             RepoStore.Save(repo, transaction);

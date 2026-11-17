@@ -924,6 +924,26 @@ internal static class Tests
         Check("files", @"Apps\Games\x.zip|Apps\Games\y.zip", string.Join("|", back?.CurrentFiles ?? []));
         Check("checked at", checkedAt, back?.CheckedAt);
 
+        // ----- Ignore on refresh -----
+
+        Check("ignore on refresh: off for a new repo", false, back?.IgnoreOnRefresh);
+        back!.IgnoreOnRefresh = true;
+        RepoStore.Save(back);
+        Check("ignore on refresh: saved by Edit", true, RepoStore.Get(id)?.IgnoreOnRefresh);
+        Check("ignore on refresh: Edit leaves the versions alone", latest, RepoStore.Get(id)?.Latest);
+        Check("ignore on refresh: left out of a refresh, still in the list", "0 of 1",
+            $"{VersionState.ToRefresh(RepoStore.List().Where(r => r.Id == id)).Count} of {RepoStore.List().Count(r => r.Id == id)}");
+
+        var fresh = new Repo { Name = "Ignored From The Start", SiteId = github.Id, Path = "o/ignored-new", Folder = "Ignored", IgnoreOnRefresh = true };
+        RepoStore.Save(fresh);
+        Check("ignore on refresh: saved by Add", true, RepoStore.Get(fresh.Id)?.IgnoreOnRefresh);
+        RepoStore.Delete(fresh.Id);
+
+        back.IgnoreOnRefresh = false;
+        RepoStore.Save(back);
+        Check("ignore on refresh: unticked again", false, RepoStore.Get(id)?.IgnoreOnRefresh);
+        Check("ignore on refresh: back in a refresh", 1, VersionState.ToRefresh(RepoStore.List().Where(r => r.Id == id)).Count);
+
         RepoStore.SetError(id, "Not found (404).", checkedAt.AddHours(1));
         back = RepoStore.Get(id);
         Check("error saved", "Not found (404).", back?.Error);
@@ -2698,6 +2718,7 @@ internal static class Tests
             new()
             {
                 Id = 1, Name = "Pokémon Tool", SiteId = 1, Path = "o/poke", Folder = "Poke", FilterId = 2, KeepPrevious = true, KeepVersions = 3,
+                IgnoreOnRefresh = true,
                 Selected = new VersionRef("v1.2", pinDate, VersionKind.Release),
                 Current = new VersionRef("v1.1-current", null, VersionKind.Release),
                 Latest = new VersionRef("v1.3-latest", null, VersionKind.Release),
@@ -2753,6 +2774,8 @@ internal static class Tests
         Check("round trip: filter", @"Games\PC", string.Join("\\", poke.Filter));
         Check("round trip: keep previous", true, poke.KeepPrevious);
         Check("round trip: versions to keep", 3, poke.KeepVersions);
+        Check("round trip: ignore on refresh", true, poke.IgnoreOnRefresh);
+        Check("ignore on refresh written for every repo", 2, json.Split("\"ignoreOnRefresh\"").Length - 1);
         Check("versions to keep written for every repo, 0 included", 2, json.Split("versionsToKeep").Length - 1);
         Check("0 written as such", true, json.Contains("\"versionsToKeep\": 0", StringComparison.Ordinal));
         Check("pinned version not exported: whoever imports picks their own", false,
@@ -2763,6 +2786,7 @@ internal static class Tests
         Check("round trip: self-hosted API", ApiType.Gitea, loose.Type);
         Check("round trip: in no folder", 0, loose.Filter.Count);
         Check("round trip: not kept", false, loose.KeepPrevious);
+        Check("round trip: not ignored", false, loose.IgnoreOnRefresh);
 
         // ----- files that are refused whole -----
 
@@ -2808,7 +2832,7 @@ internal static class Tests
             ,"filters":[["ImportRoot"],["ImportRoot","PC"],["OnlyInFile"]],
              "repos":[
                {"name":"A","site":"GitHub.com","api":"GitHub","repository":"o/import-a","folder":"A - a","filter":["ImportRoot","PC"],
-                "keepPreviousVersions":true,"versionsToKeep":4,"selectedVersion":{"tag":"v2","kind":"Release"}},
+                "keepPreviousVersions":true,"versionsToKeep":4,"ignoreOnRefresh":true,"selectedVersion":{"tag":"v2","kind":"Release"}},
                {"name":"B","site":"git.import-test.org","api":"Gitea","repository":"me/import-b","folder":"B","filter":[]},
                {"name":"C","site":"gitlab.com","api":"GitLab","repository":"g/s/import-c","folder":"C","filter":["ImportRoot"]}
              ]}
@@ -2833,6 +2857,7 @@ internal static class Tests
         Check("existing folder reused, not doubled", 1, after.Count(f => f.ParentId is null && f.Name.Equals("importroot", StringComparison.OrdinalIgnoreCase)));
         Check("keep previous imported", true, a.KeepPrevious);
         Check("versions to keep imported", 4, a.KeepVersions);
+        Check("ignore on refresh imported", true, a.IgnoreOnRefresh);
         Check("a pin in an older file is ignored", null, a.Selected);
         Check("nothing downloaded yet", null, a.Current);
 
@@ -2842,6 +2867,7 @@ internal static class Tests
         Check("with its API type", ApiType.Gitea, newSite.Type);
         Check("and no token", string.Empty, newSite.Token);
         Check("repo of no folder stays in none", null, b.FilterId);
+        Check("no ignoreOnRefresh in the file: not ignored", false, b.IgnoreOnRefresh);
 
         Repo mine = RepoStore.Get(existing.Id)!;
         Check("existing repo keeps its name", "Mine, renamed", mine.Name);

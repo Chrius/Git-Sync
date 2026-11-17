@@ -1,21 +1,12 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
-using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace GitSync;
 
 internal sealed class MainForm : Form
 {
-    [DllImport("user32.dll", EntryPoint = "SetClassLongPtrW")]
-    private static extern IntPtr SetClassLongPtr(IntPtr window, int index, IntPtr value);
-
-    private const int GCLP_HICON = -14;
-    private const int GCLP_HICONSM = -34;
-
-    /// <summary>The 16-pixel icon given to the window class; kept so it lives as long as the window.</summary>
-    private Icon? _classSmallIcon;
 
     private const int TreeWidth = 250;
     private const int FooterHeight = 60;
@@ -229,7 +220,14 @@ internal sealed class MainForm : Form
         return button;
     }
 
-    /// <summary>The exe's own icon, so the title bar always matches what Explorer shows.</summary>
+    /// <summary>
+    /// The exe's own icon, so the title bar always matches what Explorer shows.
+    ///
+    /// On this window only, not on its window class (1.1.5 did that, as a
+    /// fallback for a taskbar button left blank while the window was busy):
+    /// every Git-Sync window shares the class, and the dialogs, made without
+    /// an icon, all showed it in their title bars.
+    /// </summary>
     private static Icon? ExeIcon()
     {
         try
@@ -240,25 +238,6 @@ internal sealed class MainForm : Form
         catch
         {
             return null;
-        }
-    }
-
-    /// <summary>
-    /// Gives the window class the icon as well. The taskbar asks the window
-    /// for its icon, and a window too busy to answer in time (rebuilding a
-    /// list of 1,368 repos took seconds) got a blank button, or none while
-    /// Windows showed its "Not Responding" ghost. The class's icon is read
-    /// without asking the window, and WinForms leaves it empty.
-    /// </summary>
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-
-        if (Icon is { } icon)
-        {
-            _classSmallIcon ??= new Icon(icon, SystemInformation.SmallIconSize);
-            SetClassLongPtr(Handle, GCLP_HICON, icon.Handle);
-            SetClassLongPtr(Handle, GCLP_HICONSM, _classSmallIcon.Handle);
         }
     }
 
@@ -582,7 +561,9 @@ internal sealed class MainForm : Form
         string where = InFolder(folder);
 
         int updates = VersionState.PendingUpdates(shown).Count;
-        int failed = shown.Count(r => r.Error.Length > 0);
+        // An ignored repository with an error (one deleted from its site) is
+        // not news: counted here, it would say "could not be checked" forever.
+        int failed = shown.Count(r => r.Error.Length > 0 && !r.IgnoreOnRefresh);
 
         string text = (inFolder.Count, shown.Count) switch
         {
@@ -660,6 +641,8 @@ internal sealed class MainForm : Form
         }
 
         List<Repo> inFolder = VisibleRepos(all);
+        int allChecked = VersionState.ToRefresh(all).Count;
+        int folderChecked = VersionState.ToRefresh(inFolder).Count;
 
         _refreshMenu?.Dispose();
         _refreshMenu = new ContextMenuStrip
@@ -670,21 +653,29 @@ internal sealed class MainForm : Form
             ShowImageMargin = false
         };
 
+        // The counts are what will be checked; the ignored ones are named apart,
+        // so the numbers still add up to what the status line says.
         _refreshMenu.Items.Add(new ToolStripMenuItem(
-            $"Refresh everything ({Count(all.Count)})", null, (_, _) => RefreshRepos(all, everything: true)));
+            $"Refresh everything ({Count(allChecked)}{Ignored(all.Count - allChecked)})",
+            null, (_, _) => RefreshRepos(all, everything: true))
+        {
+            Enabled = allChecked > 0
+        });
 
         // "&&": a single "&" in a folder name would become a shortcut underline.
         _refreshMenu.Items.Add(new ToolStripMenuItem(
-            $"Refresh only \"{folder.Name.Replace("&", "&&", StringComparison.Ordinal)}\" ({Count(inFolder.Count)})",
+            $"Refresh only \"{folder.Name.Replace("&", "&&", StringComparison.Ordinal)}\" "
+            + $"({Count(folderChecked)}{Ignored(inFolder.Count - folderChecked)})",
             null, (_, _) => RefreshRepos(inFolder, everything: false))
         {
-            Enabled = inFolder.Count > 0
+            Enabled = folderChecked > 0
         });
 
         // Above the button: it sits at the bottom of the window.
         _refreshMenu.Show(_refresh, new Point(0, -2), ToolStripDropDownDirection.AboveRight);
 
         static string Count(int n) => n == 1 ? "1 repository" : $"{n} repositories";
+        static string Ignored(int n) => n > 0 ? $", {n} ignored" : string.Empty;
     }
 
     /// <param name="everything">
@@ -695,6 +686,24 @@ internal sealed class MainForm : Form
     {
         if (_refreshing)
         {
+            return;
+        }
+
+        // "Ignore on refresh" (a repository deleted from its site) is left
+        // out of every refresh: the button, the automatic check and the check
+        // of an import. It keeps its last answer, and its grey X says why.
+        repos = VersionState.ToRefresh(repos);
+
+        if (repos.Count == 0)
+        {
+            // Done all the same, or the automatic check would come back every 30 s.
+            if (everything)
+            {
+                AutoCheck.SetLastFullCheck(DateTimeOffset.UtcNow);
+                _auto = AutoCheck.Load();
+            }
+
+            UpdateSummary("Nothing to check: every repository here is ignored on refresh");
             return;
         }
 
@@ -1043,9 +1052,15 @@ internal sealed class MainForm : Form
         ReloadAll(keepScroll: true);
     }
 
+    /// <summary>
+    /// Opens the repo's folder, empty or not. With no folder yet, offers to
+    /// create it, as the first download would: then a folder of files to go
+    /// with the repo can be set up before anything is downloaded.
+    /// </summary>
     private void OpenFolder(Repo repo)
     {
-        string folder = DownloadPaths.RepoFolder(repo, _filters);
+        string own = DownloadPaths.RepoFolder(repo, _filters);
+        string folder = own;
 
         // The files may still be where an older Folder or Filter put them.
         if (!Directory.Exists(folder) && repo.CurrentFiles.Count > 0)
@@ -1055,8 +1070,32 @@ internal sealed class MainForm : Form
 
         if (!Directory.Exists(folder))
         {
-            Warn("Nothing has been downloaded for this repository yet.");
-            return;
+            // Files recorded but no folder: it was deleted or renamed by hand.
+            string why = repo.CurrentFiles.Count == 0
+                ? "Nothing has been downloaded for this repository yet."
+                : "This repository's folder is not there any more.";
+
+            DialogResult answer = DarkMessageBox.Show(this,
+                $"{why}\n\nCreate its folder anyway?\n{own}",
+                "Git-Sync", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+
+            if (answer != DialogResult.Yes)
+            {
+                return;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(own);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                // A custom folder on a drive that is not connected, for one.
+                Warn($"Could not create the folder:\n{own}\n\n{error.Message}");
+                return;
+            }
+
+            folder = own;
         }
 
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
@@ -1385,7 +1424,6 @@ internal sealed class MainForm : Form
             _refreshMenu?.Dispose();
             _tips.Dispose();
             _closing.Dispose();
-            _classSmallIcon?.Dispose();
         }
 
         base.Dispose(disposing);
