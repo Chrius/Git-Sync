@@ -98,6 +98,9 @@ internal static class ApiUrls
         _ => $"{RepoRoot(site, path)}/tarball/{Uri.EscapeDataString(sha)}"
     };
 
+    /// <summary>The repository's own page: release texts link attachments and source archives under it.</summary>
+    internal static string ProjectPage(Site site, string path) => $"{WebRoot(site)}/{path}";
+
     /// <summary>The releases page in the browser.</summary>
     internal static string ReleasesPage(Site site, string path) => site.Type == ApiType.GitLab
         ? $"{WebRoot(site)}/{path}/-/releases"
@@ -316,7 +319,7 @@ internal static class ApiClient
     internal static async Task<List<Release>> ListReleasesAsync(Site site, Repo repo, int count, CancellationToken cancel = default)
     {
         string json = await GetJsonAsync(site, ApiUrls.Releases(site, repo.Path, count), cancel) ?? "[]";
-        return Parse(() => ReleaseParser.ParseList(site.Type, json, repo.Path));
+        return Parse(() => ReleaseParser.ParseList(site.Type, json, repo.Path, ApiUrls.ProjectPage(site, repo.Path)));
     }
 
     /// <summary>
@@ -481,6 +484,6 @@ internal static class ApiClient
         string? json = await GetJsonAsync(site, ApiUrls.ReleaseByTag(site, repo.Path, version.Tag), cancel, missingIsNull: true)
             ?? throw new ApiException($"Version {version.Tag} is no longer on the site.");
 
-        return Parse(() => ReleaseParser.ParseSingle(site.Type, json, repo.Path));
+        return Parse(() => ReleaseParser.ParseSingle(site.Type, json, repo.Path, ApiUrls.ProjectPage(site, repo.Path)));
     }
 }

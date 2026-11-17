@@ -29,6 +29,7 @@ internal static class Tests
         TestGitHubParsing();
         TestGitLabParsing();
         TestGiteaParsing();
+        TestLinkedFiles();
         TestPickLatest();
         TestSourceHead();
         TestApiUrls();
@@ -2074,6 +2075,173 @@ internal static class Tests
         Check("paging through 1,368 lines shows every one of them", Count, seen.Count);
         Check("the last line is among them", true, seen.Contains(Count - 1));
         Check("at any offset the rows cover the whole view", true, covered);
+    }
+
+    /// <summary>
+    /// Eden's CI release (git.eden-emu.dev, Forgejo) as the site sent it on
+    /// 2026-11-17: nothing uploaded, eight builds linked from the text on
+    /// another server, plus links to a commit and a comparison.
+    /// </summary>
+    private const string EdenNotes = """
+        Master branch build for [`d85bad8924`](https://git.eden-emu.dev/eden-emu/eden/commit/d85bad8924)
+
+        Full changelog: [`5274828c9c...d85bad8924`](https://git.eden-emu.dev/eden-emu/eden/compare/5274828c9c...d85bad8924)
+
+        # Packages
+
+        ## Targets
+
+        Each build is optimized for a specific architecture and uses a specific compiler.
+
+        - **aarch64/arm64**: For devices that use the armv8-a instruction set; e.g. Snapdragon X, all Android devices, and Apple Silicon Macs.
+        - **amd64**: For devices that use the amd64 (aka x86_64) instruction set; this is exclusively used by Intel and AMD CPUs and is only found on desktops.
+        - **v3**: For devices that use the x86_64-v3 instruction set or newer; this is found on Ryzen, Intel 4th Generation (Haswell), and newer.
+
+        ### PGO
+
+        PGO builds usually perform ~10-30% better than standard builds, and are thus generally recommended for all users.
+
+        ## Linux
+
+        Linux packages are distributed via AppImage.
+
+        | Build Type |  | Notes |
+        |------------|--|-------|
+        | amd64 | [Standard AppImage](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Linux-d85bad8924-amd64-gcc-standard.AppImage) |  |
+        | Legacy amd64 | [Standard AppImage](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Linux-d85bad8924-legacy-gcc-standard.AppImage) | Pre-Ryzen or Haswell CPUs (expect sadness) |
+        | ARM (aarch64) | [Standard AppImage](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Linux-d85bad8924-aarch64-gcc-standard.AppImage) |  |
+
+        ## Windows
+
+        Windows packages are in-place zip files. Setup files are soon to come.
+
+
+        | Build Type |  | Notes |
+        |------------|--|-------|
+        | amd64/x86_64 (MSVC) | [MSVC zip](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Windows-d85bad8924-amd64-msvc-standard.zip) | Use if you encounter graphical issues on other builds (e.g. Pokemon Scarlet & Violet) |
+        | amd64/x86_64 v3 | [Standard zip](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Windows-d85bad8924-amd64-gcc-standard.zip) |  | Built with MinGW. Requires Ryzen, 4th gen Intel, or newer |
+        | aarch64/arm64 | [Standard zip](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Windows-d85bad8924-arm64-clang-standard.zip) |  | Snapdragon devices |
+
+        ## Android
+
+
+        | Build Type |  | Notes |
+        |------------|--|-------|
+        | Standard | [Standard APK](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Android-d85bad8924-standard.apk) |  | The standard build. Most users should use this. |
+
+        ## macOS
+
+        macOS comes in a DMG image. These builds are currently experimental, and you should expect major graphical glitches and crashes.
+        In order to run the app, you *may* need to go to System Settings -> Privacy & Security -> Security -> Allow untrusted app.
+
+        - [macOS DMG](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-macOS-d85bad8924.dmg)
+        """;
+
+    private static void TestLinkedFiles()
+    {
+        Section("Files linked from the release text");
+
+        const string Project = "https://git.eden-emu.dev/eden-ci/master";
+        const string Tag = "v1794844961.d85bad8924";
+
+        string json = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["tag_name"] = Tag,
+            ["name"] = "Eden Master - d85bad8924",
+            ["published_at"] = "2026-11-16T12:00:00Z",
+            ["draft"] = false,
+            ["prerelease"] = false,
+            ["assets"] = Array.Empty<object>(),
+            ["zipball_url"] = $"{Project}/archive/{Tag}.zip",
+            ["tarball_url"] = $"{Project}/archive/{Tag}.tar.gz",
+            ["html_url"] = $"{Project}/releases/tag/{Tag}",
+            ["body"] = EdenNotes
+        });
+
+        Release eden = ReleaseParser.ParseSingle(ApiType.Gitea, json, "eden-ci/master", Project);
+        Check("eden: the 8 builds of the text, in its order",
+            "Eden-Linux-d85bad8924-amd64-gcc-standard.AppImage|Eden-Linux-d85bad8924-legacy-gcc-standard.AppImage|"
+            + "Eden-Linux-d85bad8924-aarch64-gcc-standard.AppImage|Eden-Windows-d85bad8924-amd64-msvc-standard.zip|"
+            + "Eden-Windows-d85bad8924-amd64-gcc-standard.zip|Eden-Windows-d85bad8924-arm64-clang-standard.zip|"
+            + "Eden-Android-d85bad8924-standard.apk|Eden-macOS-d85bad8924.dmg",
+            string.Join("|", eden.Files.Select(f => f.Name)));
+        Check("eden: a release with files, not source code", VersionKind.Release, eden.Kind);
+        Check("eden: the address as linked",
+            $"https://master.eden-emu.dev/{Tag}/Eden-Windows-d85bad8924-amd64-msvc-standard.zip",
+            eden.Files.First(f => f.Name.Contains("msvc", StringComparison.Ordinal)).Url);
+        Check("eden: size not known before the download", -1L, eden.Files[0].Size);
+        Check("eden: none of them is source", false, eden.Files.Any(f => f.IsSource));
+        Check("eden: the source archives stay for Show source code", 2, eden.Sources.Count);
+        Check("eden: offered with Show source code off", 8, eden.Offered(false).Count);
+        Check("eden: the token never goes to the other server", false,
+            ApiUrls.ShouldSendToken(new Site { Host = "git.eden-emu.dev", Type = ApiType.Gitea, Token = "secret" }, new Uri(eden.Files[3].Url)));
+
+        // Update All ticks last time's pick on the next build: the commit in
+        // the names changes every time.
+        const string NextTag = "v1794900000.a1b2c3d4e5";
+        List<ReleaseFile> next = [.. eden.Files.Select(f => f with { Name = f.Name.Replace("d85bad8924", "a1b2c3d4e5", StringComparison.Ordinal) })];
+        string saved = "Apps/Eden/" + DownloadPaths.LabeledName("Eden-Windows-d85bad8924-amd64-msvc-standard.zip", eden.ToVersion().DisplayTag);
+        Check("eden: the next build's MSVC zip comes up ticked", "Eden-Windows-a1b2c3d4e5-amd64-msvc-standard.zip",
+            string.Join("|", DownloadPaths.PreChecked(next, NextTag, [saved], eden.ToVersion().DisplayTag)));
+
+        // ----- what counts as a linked file -----
+
+        static List<ReleaseFile> Linked(string notes, string? project = "https://github.com/o/r", params string[] uploaded) =>
+            ReleaseParser.LinkedFiles(notes, uploaded.Select(n => new ReleaseFile(n, 1, "https://github.com/o/r/releases/download/v1/" + n)), project);
+
+        static string One(List<ReleaseFile> files) => files.Count == 1 ? $"{files[0].Name} <- {files[0].Url}" : $"{files.Count} files";
+
+        Check("bare address, the sentence's period dropped", "app.zip <- https://x.org/dl/app.zip",
+            One(Linked("Get it at https://x.org/dl/app.zip.")));
+        Check("HTML link with a query", "tool.7z <- https://x.org/a/tool.7z?raw=1&v=2",
+            One(Linked("<a href=\"https://x.org/a/tool.7z?raw=1&amp;v=2\">tool</a>")));
+        Check("escaped name", "My App.exe", Linked("[x](https://x.org/My%20App.exe)")[0].Name);
+        Check("in a table cell", "a.zip <- https://x.org/a.zip", One(Linked("| Windows | [zip](https://x.org/a.zip) | |")));
+        Check("in bold", "b.zip <- https://x.org/b.zip", One(Linked("**https://x.org/b.zip**")));
+        Check("pages, pictures and commits are not files", 0,
+            Linked("[docs](https://x.org/docs) ![shot](https://x.org/shot.png) https://github.com/o/r/commit/abc1234").Count);
+        Check("the project's own source archive is left to Show source code", 0,
+            Linked("[source](https://github.com/o/r/archive/refs/tags/v1.zip)").Count);
+        Check("GitLab's source archive too", 0,
+            Linked("[source](https://gitlab.com/g/p/-/archive/v1/p-v1.zip)", "https://gitlab.com/g/p").Count);
+        Check("another project's archive is a file like any other", 1,
+            Linked("[dependency](https://github.com/other/dep/archive/v2.zip)").Count);
+        Check("a file uploaded to the release is not listed twice", 0,
+            Linked("[app](https://github.com/o/r/releases/download/v1/app.zip)", "https://github.com/o/r", "app.zip").Count);
+        Check("the same file linked twice is listed once", 1, Linked("[a](https://x.org/app.zip) or https://x.org/app.zip").Count);
+        Check("GitLab attachment, under the project",
+            "build.tar.gz <- https://gitlab.com/g/p/uploads/abc123/build.tar.gz",
+            One(Linked("[build](/uploads/abc123/build.tar.gz)", "https://gitlab.com/g/p")));
+        Check("GitLab attachment with no project address known: skipped", 0, Linked("[build](/uploads/abc123/build.tar.gz)", null).Count);
+        Check("not http: skipped", 0, Linked("ftp://x.org/app.zip").Count);
+        Check("no text: nothing", 0, Linked(string.Empty).Count);
+        Check("download types", "True,True,True,True,False,False",
+            string.Join(",", new[] { "a.AppImage", "b.tar.zst", "c.apk", "d.MSI", "e.png", ".zip" }.Select(ReleaseParser.IsDownloadName)));
+
+        // A GitHub release with both: the uploaded file first, then the other link.
+        string github = """
+            [{"tag_name":"v1","name":"v1","draft":false,"prerelease":false,"published_at":"2026-11-01T00:00:00Z",
+              "assets":[{"name":"app.zip","size":10,"browser_download_url":"https://github.com/o/r/releases/download/v1/app.zip",
+                         "url":"https://api.github.com/repos/o/r/releases/assets/1"}],
+              "body":"Download [app](https://github.com/o/r/releases/download/v1/app.zip) or the [portable build](https://cdn.example.org/app-portable.7z).",
+              "zipball_url":"https://api.github.com/repos/o/r/zipball/v1","tarball_url":"https://api.github.com/repos/o/r/tarball/v1"}]
+            """;
+        Release both = ReleaseParser.ParseList(ApiType.GitHub, github, "o/r", "https://github.com/o/r").Single();
+        Check("github: uploaded first, then the linked one; no double", "app.zip|app-portable.7z",
+            string.Join("|", both.Files.Select(f => f.Name)));
+        Check("github: the uploaded one keeps its API address", "https://api.github.com/repos/o/r/releases/assets/1", both.Files[0].ApiUrl);
+        Check("github: the linked one has none", null, both.Files[1].ApiUrl);
+
+        // GitLab keeps the text in "description".
+        string gitlab = """
+            [{"tag_name":"v1","name":"v1","released_at":"2026-11-01T00:00:00Z","upcoming_release":false,
+              "description":"Build: [win](/uploads/f00d/app-win.zip)",
+              "assets":{"links":[],"sources":[{"format":"zip","url":"https://gitlab.com/g/p/-/archive/v1/p-v1.zip"}]}}]
+            """;
+        Release lab = ReleaseParser.ParseList(ApiType.GitLab, gitlab, "g/p", "https://gitlab.com/g/p").Single();
+        Check("gitlab: attachment from the description", "app-win.zip <- https://gitlab.com/g/p/uploads/f00d/app-win.zip",
+            lab.Files.Count == 1 ? $"{lab.Files[0].Name} <- {lab.Files[0].Url}" : $"{lab.Files.Count} files");
+        Check("gitlab: so not source code", VersionKind.Release, lab.Kind);
     }
 
     private static void TestSorting()
