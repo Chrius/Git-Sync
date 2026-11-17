@@ -201,7 +201,7 @@ internal static partial class ReleaseParser
     /// <summary>
     /// Files linked from the release's own text. Some projects upload nothing
     /// to the release and link their builds from its description instead
-    /// (Eden's CI: eight builds, all on another server), and such a release
+    /// (nightly CI builds, often all on another server), and such a release
     /// looked like source code only. Each link keeps the file name its
     /// address ends with; the size is unknown until it downloads.
     ///

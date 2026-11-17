@@ -2078,76 +2078,60 @@ internal static class Tests
     }
 
     /// <summary>
-    /// Eden's CI release (git.eden-emu.dev, Forgejo) as the site sent it on
-    /// 2026-11-17: nothing uploaded, eight builds linked from the text on
-    /// another server, plus links to a commit and a comparison.
+    /// A CI release as some projects publish them (here on a Forgejo server):
+    /// nothing uploaded, eight builds linked from the text on another server,
+    /// in tables and a list, plus links to a commit and a comparison.
+    /// Addresses on example.org, which is reserved for examples.
     /// </summary>
-    private const string EdenNotes = """
-        Master branch build for [`d85bad8924`](https://git.eden-emu.dev/eden-emu/eden/commit/d85bad8924)
+    private const string CiNotes = """
+        Nightly build for [`d85bad8924`](https://git.example.org/sample/app/commit/d85bad8924)
 
-        Full changelog: [`5274828c9c...d85bad8924`](https://git.eden-emu.dev/eden-emu/eden/compare/5274828c9c...d85bad8924)
+        Full changelog: [`5274828c9c...d85bad8924`](https://git.example.org/sample/app/compare/5274828c9c...d85bad8924)
 
         # Packages
 
-        ## Targets
-
-        Each build is optimized for a specific architecture and uses a specific compiler.
-
-        - **aarch64/arm64**: For devices that use the armv8-a instruction set; e.g. Snapdragon X, all Android devices, and Apple Silicon Macs.
-        - **amd64**: For devices that use the amd64 (aka x86_64) instruction set; this is exclusively used by Intel and AMD CPUs and is only found on desktops.
-        - **v3**: For devices that use the x86_64-v3 instruction set or newer; this is found on Ryzen, Intel 4th Generation (Haswell), and newer.
-
-        ### PGO
-
-        PGO builds usually perform ~10-30% better than standard builds, and are thus generally recommended for all users.
+        Each build is made for one architecture with one compiler.
 
         ## Linux
 
-        Linux packages are distributed via AppImage.
-
         | Build Type |  | Notes |
         |------------|--|-------|
-        | amd64 | [Standard AppImage](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Linux-d85bad8924-amd64-gcc-standard.AppImage) |  |
-        | Legacy amd64 | [Standard AppImage](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Linux-d85bad8924-legacy-gcc-standard.AppImage) | Pre-Ryzen or Haswell CPUs (expect sadness) |
-        | ARM (aarch64) | [Standard AppImage](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Linux-d85bad8924-aarch64-gcc-standard.AppImage) |  |
+        | amd64 | [Standard AppImage](https://builds.example.org/v1794844961.d85bad8924/App-Linux-d85bad8924-amd64-gcc-standard.AppImage) |  |
+        | Legacy amd64 | [Standard AppImage](https://builds.example.org/v1794844961.d85bad8924/App-Linux-d85bad8924-legacy-gcc-standard.AppImage) | Older CPUs |
+        | ARM (aarch64) | [Standard AppImage](https://builds.example.org/v1794844961.d85bad8924/App-Linux-d85bad8924-aarch64-gcc-standard.AppImage) |  |
 
         ## Windows
 
-        Windows packages are in-place zip files. Setup files are soon to come.
-
-
         | Build Type |  | Notes |
         |------------|--|-------|
-        | amd64/x86_64 (MSVC) | [MSVC zip](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Windows-d85bad8924-amd64-msvc-standard.zip) | Use if you encounter graphical issues on other builds (e.g. Pokemon Scarlet & Violet) |
-        | amd64/x86_64 v3 | [Standard zip](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Windows-d85bad8924-amd64-gcc-standard.zip) |  | Built with MinGW. Requires Ryzen, 4th gen Intel, or newer |
-        | aarch64/arm64 | [Standard zip](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Windows-d85bad8924-arm64-clang-standard.zip) |  | Snapdragon devices |
+        | amd64 (MSVC) | [MSVC zip](https://builds.example.org/v1794844961.d85bad8924/App-Windows-d85bad8924-amd64-msvc-standard.zip) | Use if the others have graphical issues |
+        | amd64 v3 | [Standard zip](https://builds.example.org/v1794844961.d85bad8924/App-Windows-d85bad8924-amd64-gcc-standard.zip) |  | Newer CPUs only |
+        | arm64 | [Standard zip](https://builds.example.org/v1794844961.d85bad8924/App-Windows-d85bad8924-arm64-clang-standard.zip) |  |
 
         ## Android
 
-
         | Build Type |  | Notes |
         |------------|--|-------|
-        | Standard | [Standard APK](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-Android-d85bad8924-standard.apk) |  | The standard build. Most users should use this. |
+        | Standard | [Standard APK](https://builds.example.org/v1794844961.d85bad8924/App-Android-d85bad8924-standard.apk) |  | Most users should use this. |
 
         ## macOS
 
-        macOS comes in a DMG image. These builds are currently experimental, and you should expect major graphical glitches and crashes.
-        In order to run the app, you *may* need to go to System Settings -> Privacy & Security -> Security -> Allow untrusted app.
+        Experimental.
 
-        - [macOS DMG](https://master.eden-emu.dev/v1794844961.d85bad8924/Eden-macOS-d85bad8924.dmg)
+        - [macOS DMG](https://builds.example.org/v1794844961.d85bad8924/App-macOS-d85bad8924.dmg)
         """;
 
     private static void TestLinkedFiles()
     {
         Section("Files linked from the release text");
 
-        const string Project = "https://git.eden-emu.dev/eden-ci/master";
+        const string Project = "https://git.example.org/sample/app";
         const string Tag = "v1794844961.d85bad8924";
 
         string json = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object?>
         {
             ["tag_name"] = Tag,
-            ["name"] = "Eden Master - d85bad8924",
+            ["name"] = "Nightly - d85bad8924",
             ["published_at"] = "2026-11-16T12:00:00Z",
             ["draft"] = false,
             ["prerelease"] = false,
@@ -2155,34 +2139,34 @@ internal static class Tests
             ["zipball_url"] = $"{Project}/archive/{Tag}.zip",
             ["tarball_url"] = $"{Project}/archive/{Tag}.tar.gz",
             ["html_url"] = $"{Project}/releases/tag/{Tag}",
-            ["body"] = EdenNotes
+            ["body"] = CiNotes
         });
 
-        Release eden = ReleaseParser.ParseSingle(ApiType.Gitea, json, "eden-ci/master", Project);
-        Check("eden: the 8 builds of the text, in its order",
-            "Eden-Linux-d85bad8924-amd64-gcc-standard.AppImage|Eden-Linux-d85bad8924-legacy-gcc-standard.AppImage|"
-            + "Eden-Linux-d85bad8924-aarch64-gcc-standard.AppImage|Eden-Windows-d85bad8924-amd64-msvc-standard.zip|"
-            + "Eden-Windows-d85bad8924-amd64-gcc-standard.zip|Eden-Windows-d85bad8924-arm64-clang-standard.zip|"
-            + "Eden-Android-d85bad8924-standard.apk|Eden-macOS-d85bad8924.dmg",
-            string.Join("|", eden.Files.Select(f => f.Name)));
-        Check("eden: a release with files, not source code", VersionKind.Release, eden.Kind);
-        Check("eden: the address as linked",
-            $"https://master.eden-emu.dev/{Tag}/Eden-Windows-d85bad8924-amd64-msvc-standard.zip",
-            eden.Files.First(f => f.Name.Contains("msvc", StringComparison.Ordinal)).Url);
-        Check("eden: size not known before the download", -1L, eden.Files[0].Size);
-        Check("eden: none of them is source", false, eden.Files.Any(f => f.IsSource));
-        Check("eden: the source archives stay for Show source code", 2, eden.Sources.Count);
-        Check("eden: offered with Show source code off", 8, eden.Offered(false).Count);
-        Check("eden: the token never goes to the other server", false,
-            ApiUrls.ShouldSendToken(new Site { Host = "git.eden-emu.dev", Type = ApiType.Gitea, Token = "secret" }, new Uri(eden.Files[3].Url)));
+        Release ci = ReleaseParser.ParseSingle(ApiType.Gitea, json, "sample/app", Project);
+        Check("CI release: the 8 builds of the text, in its order",
+            "App-Linux-d85bad8924-amd64-gcc-standard.AppImage|App-Linux-d85bad8924-legacy-gcc-standard.AppImage|"
+            + "App-Linux-d85bad8924-aarch64-gcc-standard.AppImage|App-Windows-d85bad8924-amd64-msvc-standard.zip|"
+            + "App-Windows-d85bad8924-amd64-gcc-standard.zip|App-Windows-d85bad8924-arm64-clang-standard.zip|"
+            + "App-Android-d85bad8924-standard.apk|App-macOS-d85bad8924.dmg",
+            string.Join("|", ci.Files.Select(f => f.Name)));
+        Check("CI release: a release with files, not source code", VersionKind.Release, ci.Kind);
+        Check("CI release: the address as linked",
+            $"https://builds.example.org/{Tag}/App-Windows-d85bad8924-amd64-msvc-standard.zip",
+            ci.Files.First(f => f.Name.Contains("msvc", StringComparison.Ordinal)).Url);
+        Check("CI release: size not known before the download", -1L, ci.Files[0].Size);
+        Check("CI release: none of them is source", false, ci.Files.Any(f => f.IsSource));
+        Check("CI release: the source archives stay for Show source code", 2, ci.Sources.Count);
+        Check("CI release: offered with Show source code off", 8, ci.Offered(false).Count);
+        Check("CI release: the token never goes to the other server", false,
+            ApiUrls.ShouldSendToken(new Site { Host = "git.example.org", Type = ApiType.Gitea, Token = "secret" }, new Uri(ci.Files[3].Url)));
 
         // Update All ticks last time's pick on the next build: the commit in
         // the names changes every time.
         const string NextTag = "v1794900000.a1b2c3d4e5";
-        List<ReleaseFile> next = [.. eden.Files.Select(f => f with { Name = f.Name.Replace("d85bad8924", "a1b2c3d4e5", StringComparison.Ordinal) })];
-        string saved = "Apps/Eden/" + DownloadPaths.LabeledName("Eden-Windows-d85bad8924-amd64-msvc-standard.zip", eden.ToVersion().DisplayTag);
-        Check("eden: the next build's MSVC zip comes up ticked", "Eden-Windows-a1b2c3d4e5-amd64-msvc-standard.zip",
-            string.Join("|", DownloadPaths.PreChecked(next, NextTag, [saved], eden.ToVersion().DisplayTag)));
+        List<ReleaseFile> next = [.. ci.Files.Select(f => f with { Name = f.Name.Replace("d85bad8924", "a1b2c3d4e5", StringComparison.Ordinal) })];
+        string saved = "Apps/App/" + DownloadPaths.LabeledName("App-Windows-d85bad8924-amd64-msvc-standard.zip", ci.ToVersion().DisplayTag);
+        Check("CI release: the next build's MSVC zip comes up ticked", "App-Windows-a1b2c3d4e5-amd64-msvc-standard.zip",
+            string.Join("|", DownloadPaths.PreChecked(next, NextTag, [saved], ci.ToVersion().DisplayTag)));
 
         // ----- what counts as a linked file -----
 
