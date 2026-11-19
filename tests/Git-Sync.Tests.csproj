@@ -40,6 +40,7 @@
     <Compile Include="..\RepoStore.cs" />
     <Compile Include="..\RepoAddress.cs" />
     <Compile Include="..\DownloadPaths.cs" />
+    <Compile Include="..\TakenFolders.cs" />
     <Compile Include="..\ReleaseParser.cs" />
     <Compile Include="..\ApiClient.cs" />
     <Compile Include="..\Connector.cs" />

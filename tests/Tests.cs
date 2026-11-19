@@ -48,6 +48,7 @@ internal static class Tests
         TestFileCheck();
         TestDownloadRoot();
         TestRepoFolders();
+        TestTakenFolders();
         TestSorting();
         TestListWindow();
         TestSearch();
@@ -1502,6 +1503,89 @@ internal static class Tests
     }
 
     /// <summary>Subfolders in a repo's Folder, and a repo's own "Custom folder" anywhere.</summary>
+    /// <summary>
+    /// A folder of its own for a new repo, or one moved to another filter:
+    /// "Name - repo", then "Name - repo 2", "3"... (folder ids of SampleTree).
+    /// </summary>
+    private static void TestTakenFolders()
+    {
+        Section("A folder of its own");
+
+        List<Repo> repos =
+        [
+            new() { Id = 1, Name = "Ky", Folder = "Ky - ky", FilterId = 3 },
+            new() { Id = 2, Name = "Ky fork", Folder = "Ky - ky 2", FilterId = 3 },
+            new() { Id = 3, Name = "Ky elsewhere", Folder = "Ky - ky", FilterId = 4 },
+            new() { Id = 4, Name = "Keeper", Folder = "Keeper", FilterId = 6 },
+            new() { Id = 5, Name = "Packed", Folder = @"Pack\Old\Inner", FilterId = 6 },
+            new() { Id = 6, Name = "Nested", Folder = @"Utils\Ky", FilterId = 6 },
+            new() { Id = 7, Name = "Own place", Folder = @"D:\Apps\Ky", FilterId = 6 }
+        ];
+
+        var taken = new TakenFolders(repos, SampleTree);
+
+        Check("a free folder stays as it is", "Tool - tool", taken.Unique("Tool - tool", 3));
+        Check("taken, and its 2 too: 3", "Ky - ky 3", taken.Unique("Ky - ky", 3));
+        Check("taken once in this filter: 2", "Ky - ky 2", taken.Unique("Ky - ky", 4));
+        Check("free in another filter", "Ky - ky", taken.Unique("Ky - ky", 5));
+        Check("no filter is a place of its own", "Ky - ky", taken.Unique("Ky - ky", null));
+        Check("any case is the same folder", "KY - KY 3", taken.Unique("KY - KY", 3));
+        Check("inside another's Old: numbered", @"Keeper\Old 2", taken.Unique(@"Keeper\Old", 6));
+        Check("another inside this one's Old: numbered", "Pack 2", taken.Unique("Pack", 6));
+        Check("the number goes after the last subfolder", @"Utils\Ky 2", taken.Unique(@"Utils\Ky", 6));
+        Check("a custom folder is numbered the same way", @"D:\Apps\Ky 2", taken.Unique(@"D:\Apps\Ky", 6));
+        Check("nothing to number", string.Empty, taken.Unique(string.Empty, 3));
+
+        // Agrees with the check Save makes, on every case above and a few more.
+        string[] folders = ["Ky - ky", "Ky - ky 2", "ky - KY", "Tool - tool", "Keeper", @"Keeper\Old", @"Keeper\Old\Deep", "Keeper 2", "Pack", @"Pack\Old", "Utils", @"Utils\Ky", @"D:\Apps\Ky", @"D:\Apps"];
+        long?[] filterIds = [3, 4, 5, 6, null];
+        int disagreements = 0;
+
+        foreach (string folder in folders)
+        {
+            foreach (long? filterId in filterIds)
+            {
+                string place = DownloadPaths.RepoFolder(new Repo { Folder = folder, FilterId = filterId }, SampleTree);
+
+                if (taken.Clashes(place) != DownloadPaths.FolderConflict(place, repos, 0, SampleTree) is not null)
+                {
+                    disagreements++;
+                    Console.WriteLine($"       disagrees on {place}");
+                }
+            }
+        }
+
+        Check("clashes exactly where Save refuses", 0, disagreements);
+
+        taken.Add(DownloadPaths.RepoFolder(new Repo { Folder = "Ky - ky 3", FilterId = 3 }, SampleTree));
+        Check("one added during an import counts at once", "Ky - ky 4", taken.Unique("Ky - ky", 3));
+
+        // Folder still "Name - repo" (or numbered): Edit lets it follow the name.
+        Check("the suggestion itself", true, TakenFolders.IsNumberedForm("Ky - ky", "Ky - ky"));
+        Check("numbered", true, TakenFolders.IsNumberedForm("Ky - ky 2", "Ky - ky"));
+        Check("numbered past 9", true, TakenFolders.IsNumberedForm("Ky - ky 12", "Ky - ky"));
+        Check("1 is not a number Git-Sync gives", false, TakenFolders.IsNumberedForm("Ky - ky 1", "Ky - ky"));
+        Check("02 is not either", false, TakenFolders.IsNumberedForm("Ky - ky 02", "Ky - ky"));
+        Check("more than a number", false, TakenFolders.IsNumberedForm("Ky - ky 2b", "Ky - ky"));
+        Check("typed by hand", false, TakenFolders.IsNumberedForm("Ky stuff", "Ky - ky"));
+        Check("a longer name", false, TakenFolders.IsNumberedForm("Ky - kyx", "Ky - ky"));
+
+        // Thousands of repos: the Add window asks on every key typed in Name.
+        List<Repo> many = [.. Enumerable.Range(0, 3000).Select(n => new Repo { Id = n + 1, Name = $"R {n}", Folder = $"R {n}", FilterId = 3 })];
+        var clock = Stopwatch.StartNew();
+        var big = new TakenFolders(many, SampleTree);
+        string unique = string.Empty;
+
+        for (int i = 0; i < 200; i++)
+        {
+            unique = big.Unique("R 7", 3);
+        }
+
+        clock.Stop();
+        Check("3,000 repos: numbered right", "R 7 2", unique);
+        Require($"3,000 repos and 200 questions take well under a second ({clock.ElapsedMilliseconds} ms)", clock.ElapsedMilliseconds < 1000);
+    }
+
     private static void TestRepoFolders()
     {
         Section("Repo folders: subfolders and custom folders");
@@ -3196,6 +3280,27 @@ internal static class Tests
             .Replace("o/trip-", "o/trip-copy-", StringComparison.Ordinal)));
 
         Check("round trip: the same order there", "Three,One,Two", ChildrenOf("Trip Copy"));
+
+        // ----- folders already taken -----
+
+        long sameRoot = FilterStore.Add(null, "SameRoot");
+        RepoStore.Save(new Repo { Name = "Here", SiteId = 1, Path = "o/same-here", Folder = "Same", FilterId = sameRoot });
+
+        string sameFile = "{" + Head + """
+            ,"filters":["SameRoot","Apart"],
+             "repos":[
+               {"name":"One","site":"github.com","api":"GitHub","repository":"o/same-1","folder":"Same","filter":"SameRoot"},
+               {"name":"Two","site":"github.com","api":"GitHub","repository":"o/same-2","folder":"Same","filter":"SameRoot"},
+               {"name":"Three","site":"github.com","api":"GitHub","repository":"o/same-3","folder":"Same","filter":"Apart"}
+             ]}
+            """;
+
+        DataTransfer.Import(DataTransfer.Parse(sameFile));
+        static string FolderOf(string path) => RepoStore.List().First(r => r.Path == path).Folder;
+        Check("import: a folder taken here gets 2", "Same 2", FolderOf("o/same-1"));
+        Check("import: the next one in the file gets 3", "Same 3", FolderOf("o/same-2"));
+        Check("import: free in its own filter, kept", "Same", FolderOf("o/same-3"));
+        Check("import: the repo already here keeps its folder", "Same", FolderOf("o/same-here"));
 
         // ----- exporting changes nothing -----
 

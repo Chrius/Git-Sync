@@ -53,8 +53,33 @@ internal sealed class RepoForm : Form
     private readonly Button _save;
     private readonly Button _cancel;
 
-    /// <summary>Last folder name filled in automatically; while the field still holds it, it keeps following.</summary>
+    /// <summary>
+    /// The text the window last put in Folder itself. While the field still
+    /// holds it (nothing typed over it), the window may change it again: to
+    /// follow Name, or to number it for another filter.
+    /// </summary>
     private string _autoFolder = string.Empty;
+
+    /// <summary>
+    /// The Folder before any number: "Name - repo" while it follows the name,
+    /// otherwise the folder saved or typed. Numbered anew for each filter.
+    /// </summary>
+    private string _folderBase = string.Empty;
+
+    /// <summary>
+    /// Folder follows Name and Repository: for a new repo, and in Edit only
+    /// while the folder is still the one Git-Sync gave it and nothing has been
+    /// downloaded. After a download the folder holds files, and renaming the
+    /// repo must not move them; the folder can still be changed by hand.
+    /// </summary>
+    private bool _followName;
+
+    /// <summary>
+    /// The other repos' folders. A Folder Git-Sync fills in, or numbers for a
+    /// new filter, gets " 2", " 3"... rather than one of them: two repos in
+    /// one folder would delete each other's files on update.
+    /// </summary>
+    private readonly TakenFolders _taken;
 
     /// <summary>True while the window changes its own fields, so those changes do not look like typing.</summary>
     private bool _filling;
@@ -86,6 +111,7 @@ internal sealed class RepoForm : Form
 
         // A copy: a server detected while typing is added here, not to the main window's list.
         _sites = [.. sites];
+        _taken = new TakenFolders(RepoStore.List().Where(r => r.Id != editing?.Id), filters);
 
         Text = editing is null ? "Add Repository" : "Edit Repository";
         ShowIcon = false;
@@ -235,12 +261,16 @@ internal sealed class RepoForm : Form
             _keepVersions.Text = editing.KeepVersions.ToString(System.Globalization.CultureInfo.InvariantCulture);
             _ignoreOnRefresh.Checked = editing.IgnoreOnRefresh;
 
-            // Keeps following Name and Repository only if it was never changed by hand.
+            // Keeps following Name and Repository only if it was never changed
+            // by hand ("Name - repo", numbered or not) and nothing is downloaded yet.
             string suggestion = RepoAddress.SuggestFolder(editing.Name, editing.Path);
-            _autoFolder = editing.Folder == suggestion ? suggestion : "\0";
+            _followName = editing.Current is null && TakenFolders.IsNumberedForm(editing.Folder, suggestion);
+            _folderBase = _followName ? suggestion : editing.Folder;
+            _autoFolder = editing.Folder;
         }
         else
         {
+            _followName = true;
             _site.SelectedIndex = sites.Count > 0 ? 0 : -1;
             SelectFilter(defaultFilterId);
 
@@ -250,8 +280,8 @@ internal sealed class RepoForm : Form
                 _repository.Text = dropped.Path;
 
                 // Just the repo name for now; it becomes "Name - repo" as the name is typed.
-                _autoFolder = RepoAddress.SuggestFolder(string.Empty, dropped.Path);
-                _folder.Text = _autoFolder;
+                _folderBase = RepoAddress.SuggestFolder(string.Empty, dropped.Path);
+                PutFolder();
             }
         }
 
@@ -261,6 +291,7 @@ internal sealed class RepoForm : Form
 
         _name.TextChanged += (_, _) => FollowFolder();
         _repository.TextChanged += RepositoryChanged;
+        _filter.SelectedIndexChanged += (_, _) => FilterChanged();
 
         // Characters a folder name cannot have are ignored in Folder. KeyPress
         // stops them as they are typed; TextChanged is the net for pasted
@@ -550,34 +581,79 @@ internal sealed class RepoForm : Form
         _hint.ForeColor = color;
     }
 
+    /// <summary>Folder still holds what the window put there, or nothing: nothing typed over it.</summary>
+    private bool FolderIsAutomatic => _folder.Text == _autoFolder || _folder.Text.Trim().Length == 0;
+
+    private long? SelectedFilterId => (_filter.SelectedItem as FilterItem)?.Id;
+
     /// <summary>
-    /// "Name - repo" in Folder, as long as the field still holds what was put
-    /// there automatically (or nothing).
+    /// "Name - repo" in Folder, numbered when another repo has it in the
+    /// chosen filter, as long as the field still holds what was put there
+    /// automatically (or nothing).
     /// </summary>
     private void FollowFolder()
     {
-        if (_filling)
+        if (_filling || !_followName)
         {
             return;
         }
 
         string suggestion = RepoAddress.SuggestFolder(_name.Text, RepoAddress.LooksLikeAddress(_repository.Text) ? string.Empty : _repository.Text);
 
-        // A full path chosen for this repo is never replaced by a name.
+        // A full path chosen for this repo is never replaced by a name; the
+        // suggestion waits for "Custom folder" to be unticked.
         if (_customFolder.Checked)
         {
-            _autoFolder = suggestion;
+            _folderBase = suggestion;
             return;
         }
 
-        if (_folder.Text == _autoFolder || _folder.Text.Trim().Length == 0)
+        if (FolderIsAutomatic)
         {
-            _filling = true;
-            _folder.Text = suggestion;
-            _filling = false;
+            _folderBase = suggestion;
+            PutFolder();
+        }
+    }
+
+    /// <summary>
+    /// Another filter may hold a repo with the same folder name: then this one
+    /// gets the number, here in the field and, on Save, on disk as well (the
+    /// folder moves to the new filter under the numbered name), so the two
+    /// never share a folder. A folder typed by hand is numbered too: the clash
+    /// comes from the filter, not from what was typed.
+    /// </summary>
+    private void FilterChanged()
+    {
+        if (_filling || _customFolder.Checked)
+        {
+            return;
         }
 
-        _autoFolder = suggestion;
+        if (!FolderIsAutomatic)
+        {
+            string typed = _folder.Text.Trim();
+
+            if (!DownloadPaths.IsValidFolderPath(typed))
+            {
+                return;
+            }
+
+            _folderBase = DownloadPaths.NormalizeFolder(typed);
+        }
+
+        PutFolder();
+    }
+
+    /// <summary>The base folder, numbered if needed for the chosen filter, into the field.</summary>
+    private void PutFolder()
+    {
+        string folder = _folderBase.Length == 0 ? string.Empty : _taken.Unique(_folderBase, SelectedFilterId);
+
+        bool filling = _filling;
+        _filling = true;
+        _folder.Text = folder;
+        _filling = filling;
+        _autoFolder = folder;
     }
 
     // ---------- saving ----------

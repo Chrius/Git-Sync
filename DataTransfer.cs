@@ -500,6 +500,12 @@ internal static class DataTransfer
         int handled = 0;
         HashSet<string> existing = ExistingKeys(repos, sites);
 
+        // A repository whose folder another one already has there, here or
+        // earlier in the file, gets "Folder 2", "3"..., as one added by hand
+        // does: two repositories in one folder delete each other's files.
+        // Reads the live list of folders, which EnsureFolder adds to.
+        var taken = new TakenFolders(repos, filters);
+
         // About 200 reports whatever the size: one per repository would flood
         // the window's message queue on a big file.
         int step = Math.Max(1, data.Repos.Count / 200);
@@ -550,7 +556,7 @@ internal static class DataTransfer
                 Name = entry.Name,
                 SiteId = site.Id,
                 Path = entry.Path,
-                Folder = entry.Folder,
+                Folder = taken.Unique(entry.Folder, filterId),
                 FilterId = filterId,
                 KeepPrevious = entry.KeepPrevious,
                 KeepVersions = entry.KeepVersions,
@@ -559,6 +565,7 @@ internal static class DataTransfer
 
             RepoStore.Save(repo, transaction);
             added.Add(repo.Id);
+            taken.Add(DownloadPaths.RepoFolder(repo, filters));
         }
 
         PlaceCreated(data, filters, created, transaction);
