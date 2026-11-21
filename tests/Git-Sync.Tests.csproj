@@ -49,6 +49,7 @@
     <Compile Include="..\ListWindow.cs" />
     <Compile Include="..\RepoSearch.cs" />
     <Compile Include="..\PreferenceStore.cs" />
+    <Compile Include="..\FileFilters.cs" />
     <Compile Include="..\RateLimits.cs" />
     <Compile Include="..\SiteDetection.cs" />
     <Compile Include="..\AutoCheck.cs" />

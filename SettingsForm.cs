@@ -58,6 +58,7 @@ internal sealed class SettingsForm : Form
         AddTab("Sites", _sitesTab);
         AddTab("Automation", new AutomationTab());
         AddTab("Data", _dataTab);
+        AddTab("Files", new FilesTab());
 
         Controls.Add(_tabs);
     }

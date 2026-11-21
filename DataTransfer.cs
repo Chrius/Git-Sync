@@ -10,7 +10,8 @@ namespace GitSync;
 /// <param name="Filter">The folder it sits in, as names from the root; empty when it is in none.</param>
 internal sealed record ExportedRepo(
     string Name, string Host, ApiType Type, string Path, string Folder,
-    IReadOnlyList<string> Filter, bool KeepPrevious, int KeepVersions = 0, bool IgnoreOnRefresh = false);
+    IReadOnlyList<string> Filter, bool KeepPrevious, int KeepVersions = 0, bool IgnoreOnRefresh = false,
+    bool IgnorePrereleases = false);
 
 /// <summary>The content of an export file.</summary>
 /// <param name="Filters">
@@ -90,7 +91,7 @@ internal static class DataTransfer
 
             data.Repos.Add(new ExportedRepo(
                 repo.Name, site.Host, site.Type, repo.Path, repo.Folder, filter, repo.KeepPrevious, repo.KeepVersions,
-                repo.IgnoreOnRefresh));
+                repo.IgnoreOnRefresh, repo.IgnorePrereleases));
 
             for (long? current = repo.FilterId; current is { } folderId && used.Add(folderId);)
             {
@@ -160,6 +161,7 @@ internal static class DataTransfer
 
                 // Always as well; a file from before it existed reads as false.
                 json.WriteBoolean("ignoreOnRefresh", repo.IgnoreOnRefresh);
+                json.WriteBoolean("ignorePrereleases", repo.IgnorePrereleases);
                 json.WriteEndObject();
             }
 
@@ -300,7 +302,10 @@ internal static class DataTransfer
         bool ignore = e.TryGetProperty("ignoreOnRefresh", out JsonElement ignoreElement)
             && ignoreElement.ValueKind == JsonValueKind.True;
 
-        return new ExportedRepo(name, host, type, path, folder, filter, keep, versions, ignore);
+        bool stableOnly = e.TryGetProperty("ignorePrereleases", out JsonElement stableElement)
+            && stableElement.ValueKind == JsonValueKind.True;
+
+        return new ExportedRepo(name, host, type, path, folder, filter, keep, versions, ignore, stableOnly);
     }
 
     /// <summary>Adds a folder and its parents to the file's list, each once, parents first.</summary>
@@ -560,7 +565,8 @@ internal static class DataTransfer
                 FilterId = filterId,
                 KeepPrevious = entry.KeepPrevious,
                 KeepVersions = entry.KeepVersions,
-                IgnoreOnRefresh = entry.IgnoreOnRefresh
+                IgnoreOnRefresh = entry.IgnoreOnRefresh,
+                IgnorePrereleases = entry.IgnorePrereleases
             };
 
             RepoStore.Save(repo, transaction);

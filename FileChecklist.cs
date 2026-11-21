@@ -8,17 +8,23 @@ namespace GitSync;
 /// Checked list of a release's files, with All / None. Shared by the file
 /// picker and the Update All window. Shows a message instead of the list
 /// while the files load or when they cannot be loaded.
+///
+/// Files matching the ignored files of Settings > Files are left out, until
+/// "Show All Files" brings them back for this list; every new list starts
+/// filtered again. A file left out is never downloaded, ticked or not.
 /// </summary>
 internal sealed class FileChecklist : UserControl
 {
-    private sealed record Entry(ReleaseFile File)
+    /// <param name="Ignored">Matches an ignored-file pattern, shown only because Show All Files is on.</param>
+    private sealed record Entry(ReleaseFile File, bool Ignored)
     {
         // Source archives are generated on request and have no size; the note
         // says what they are, since their name is Git-Sync's, not the site's.
         public override string ToString() =>
-            File.Size > 0 ? $"{File.Name}    ({FormatSize(File.Size)})"
+            (File.Size > 0 ? $"{File.Name}    ({FormatSize(File.Size)})"
             : File.IsSource ? $"{File.Name}    (source code)"
-            : File.Name;
+            : File.Name)
+            + (Ignored ? "    \u00b7 ignored" : string.Empty);
     }
 
     private readonly Panel _frame;
@@ -26,6 +32,16 @@ internal sealed class FileChecklist : UserControl
     private readonly Label _message;
     private readonly FlatButton _all;
     private readonly FlatButton _none;
+    private readonly FlatButton _showAll;
+
+    /// <summary>Every file of the release, shown or not.</summary>
+    private IReadOnlyList<ReleaseFile> _files = [];
+
+    /// <summary>Ticked files, kept apart from the list so a tick survives hiding and showing again.</summary>
+    private readonly HashSet<ReleaseFile> _ticked = [];
+
+    private FileFilters _filters = FileFilters.None;
+    private bool _showingAll;
 
     /// <summary>
     /// True while the list is checked by code (filling it, All / None): those
@@ -57,9 +73,26 @@ internal sealed class FileChecklist : UserControl
         // time's files from its constructor (the crash on updating a release
         // with several files). Checks made by code are reported by the code
         // itself, once, when it is done.
-        _list.ItemCheck += (_, _) =>
+        _list.ItemCheck += (_, e) =>
         {
-            if (!_filling && IsHandleCreated)
+            if (_filling)
+            {
+                return;
+            }
+
+            if (e.Index >= 0 && e.Index < _list.Items.Count && _list.Items[e.Index] is Entry entry)
+            {
+                if (e.NewValue == CheckState.Checked)
+                {
+                    _ticked.Add(entry.File);
+                }
+                else
+                {
+                    _ticked.Remove(entry.File);
+                }
+            }
+
+            if (IsHandleCreated)
             {
                 BeginInvoke(() => SelectionChanged?.Invoke(this, EventArgs.Empty));
             }
@@ -85,6 +118,15 @@ internal sealed class FileChecklist : UserControl
         _none.Click += (_, _) => SetAll(false);
         Controls.Add(_all);
         Controls.Add(_none);
+
+        // Wide enough for "Show All Files (12 hidden)".
+        _showAll = new FlatButton { Text = "Show All Files", Size = new Size(176, 24), Enabled = false };
+        _showAll.Click += (_, _) =>
+        {
+            _showingAll = !_showingAll;
+            Fill();
+        };
+        Controls.Add(_showAll);
     }
 
     protected override void OnSizeChanged(EventArgs e)
@@ -95,37 +137,78 @@ internal sealed class FileChecklist : UserControl
         _frame.SetBounds(0, 0, Width, Math.Max(20, buttonsTop - 8));
         _all.Location = new Point(0, buttonsTop);
         _none.Location = new Point(_all.Right + 6, buttonsTop);
+        _showAll.Location = new Point(Width - _showAll.Width, buttonsTop);
     }
 
     internal void SetFiles(IReadOnlyList<ReleaseFile> files, ISet<string> preChecked)
     {
-        _filling = true;
-        _list.BeginUpdate();
-        _list.Items.Clear();
+        _files = files;
+        _filters = FileFilters.Saved();
+        _showingAll = false;
+        _ticked.Clear();
 
-        foreach (ReleaseFile file in files)
+        // Ticked: what matched last time, and a single file shown, the obvious choice.
+        foreach (ReleaseFile file in files.Where(f => preChecked.Contains(f.Name)))
         {
-            // A single file is the obvious choice; otherwise only what matched last time.
-            bool check = files.Count == 1 || preChecked.Contains(file.Name);
-            _list.Items.Add(new Entry(file), check);
+            _ticked.Add(file);
         }
 
-        _list.EndUpdate();
-        _filling = false;
+        if (Shown() is [var only])
+        {
+            _ticked.Add(only);
+        }
 
-        _message.Visible = false;
-        _list.Visible = true;
-        SetButtonsEnabled(files.Count > 1);
-        SelectionChanged?.Invoke(this, EventArgs.Empty);
+        Fill();
     }
 
     internal void SetMessage(string text)
     {
+        _files = [];
+        _ticked.Clear();
         _list.Items.Clear();
         _message.Text = text;
         _message.Visible = true;
         _list.Visible = false;
         SetButtonsEnabled(false);
+        _showAll.Enabled = false;
+        _showAll.Text = "Show All Files";
+        SelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private List<ReleaseFile> Shown() => _showingAll ? [.. _files] : [.. _files.Where(f => !_filters.Hides(f.Name))];
+
+    /// <summary>The list again, after a new release or Show All Files.</summary>
+    private void Fill()
+    {
+        List<ReleaseFile> shown = Shown();
+        int hidden = _files.Count(f => _filters.Hides(f.Name));
+
+        _filling = true;
+        _list.BeginUpdate();
+        _list.Items.Clear();
+
+        foreach (ReleaseFile file in shown)
+        {
+            _list.Items.Add(new Entry(file, _showingAll && _filters.Hides(file.Name)), _ticked.Contains(file));
+        }
+
+        _list.EndUpdate();
+        _filling = false;
+
+        bool allHidden = shown.Count == 0 && hidden > 0;
+        _message.Text = allHidden
+            ? (hidden == 1 ? "The only file" : $"All {hidden} files") + " of this version match the ignored files "
+              + "in Settings > Files.\nShow All Files lists them."
+            : string.Empty;
+        _message.Visible = allHidden;
+        _list.Visible = !allHidden;
+
+        SetButtonsEnabled(shown.Count > 1);
+        _showAll.Enabled = hidden > 0;
+        _showAll.Text = _showingAll ? "Hide Ignored Files"
+            : hidden > 0 ? $"Show All Files ({hidden} hidden)"
+            : "Show All Files";
+
         SelectionChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -135,6 +218,7 @@ internal sealed class FileChecklist : UserControl
         _none.Enabled = enabled;
     }
 
+    /// <summary>The ticked files among those shown: a file left out by the ignored files is not downloaded.</summary>
     internal List<ReleaseFile> CheckedFiles =>
         [.. _list.CheckedItems.Cast<Entry>().Select(entry => entry.File)];
 
@@ -145,6 +229,18 @@ internal sealed class FileChecklist : UserControl
         for (int i = 0; i < _list.Items.Count; i++)
         {
             _list.SetItemChecked(i, check);
+
+            if (_list.Items[i] is Entry entry)
+            {
+                if (check)
+                {
+                    _ticked.Add(entry.File);
+                }
+                else
+                {
+                    _ticked.Remove(entry.File);
+                }
+            }
         }
 
         _filling = false;
@@ -170,7 +266,11 @@ internal sealed class FileChecklist : UserControl
     }
 }
 
-/// <summary>Picks which files of a release to download, when it has more than one.</summary>
+/// <summary>
+/// Picks which files of a release to download. Shown for every download, one
+/// file or many, so what a new version holds is seen before it replaces the
+/// one on disk.
+/// </summary>
 internal sealed class FilePickerForm : Form
 {
     private readonly FileChecklist _files;
@@ -196,21 +296,33 @@ internal sealed class FilePickerForm : Form
         Font = new Font("Segoe UI", 9F);
 
         string version = release.Kind == VersionKind.Commit ? release.Title : release.Tag;
+        string date = release.Date is { } when
+            ? " (" + when.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + ")"
+            : string.Empty;
+
+        // The release's own title too, when it says more than the tag: it is
+        // often what tells an unrelated release apart from the real one.
+        string title = release.Kind != VersionKind.Commit && release.Title.Trim().Length > 0
+            && !string.Equals(release.Title.Trim(), release.Tag, StringComparison.OrdinalIgnoreCase)
+                ? $"\n\"{release.Title.Trim()}\""
+                : string.Empty;
 
         var heading = new Label
         {
-            Text = redownload
-                ? $"{repo.Name} — {version}\nChoose the files to download again. Unticked files are deleted."
-                : $"{repo.Name} — {version}\nChoose the files to download:",
+            Text = $"{repo.Name} — {version}{date}{title}\n"
+                 + (redownload ? "Choose the files to download again. Unticked files are deleted." : "Choose the files to download:"),
             Location = new Point(16, 12),
             AutoSize = true,
+            MaximumSize = new Size(ClientSize.Width - 32, 0),
             ForeColor = Theme.Text
         };
         Controls.Add(heading);
 
+        int listTop = heading.Top + heading.PreferredHeight + 10;
+
         _files = new FileChecklist
         {
-            Location = new Point(16, 54),
+            Location = new Point(16, listTop),
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
         };
         _download = new Button { Text = "Download", Size = new Size(96, 30), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
@@ -230,7 +342,7 @@ internal sealed class FilePickerForm : Form
 
         cancel.Location = new Point(ClientSize.Width - 16 - 96, ClientSize.Height - 16 - 30);
         _download.Location = new Point(cancel.Left - 8 - 96, cancel.Top);
-        _files.Size = new Size(ClientSize.Width - 32, cancel.Top - 12 - 54);
+        _files.Size = new Size(ClientSize.Width - 32, cancel.Top - 12 - listTop);
 
         Controls.Add(_files);
         Controls.Add(_download);

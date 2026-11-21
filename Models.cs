@@ -89,6 +89,13 @@ internal sealed class Repo
     /// </summary>
     public bool IgnoreOnRefresh { get; set; }
 
+    /// <summary>
+    /// "Ignore pre-releases": Latest is the newest stable release only, never
+    /// a pre-release (not even when the repo has nothing else), and the
+    /// right-click menu leaves pre-releases out.
+    /// </summary>
+    public bool IgnorePrereleases { get; set; }
+
     public VersionRef? Latest { get; set; }
     public VersionRef? Current { get; set; }
 

@@ -111,7 +111,22 @@ internal sealed class VersionMenu : ContextMenuStrip
             return;
         }
 
-        Release? latest = ReleaseParser.PickLatest(versions) ?? versions.FirstOrDefault();
+        // "Ignore pre-releases": left out, except the one on disk or pinned,
+        // so what the row shows can still be found here.
+        int hidden = 0;
+
+        if (_repo.IgnorePrereleases)
+        {
+            bool Kept(Release version) =>
+                (_repo.Current is { } current && VersionState.SameVersion(current, version.ToVersion()))
+                || (_repo.Selected is { } pinned && VersionState.SameVersion(pinned, version.ToVersion()));
+
+            hidden = versions.Count(v => v.Prerelease && !Kept(v));
+            versions = [.. versions.Where(v => !v.Prerelease || Kept(v))];
+        }
+
+        Release? latest = ReleaseParser.PickLatest(versions, _repo.IgnorePrereleases)
+            ?? (_repo.IgnorePrereleases ? null : versions.FirstOrDefault());
 
         ToolStripDropDown list = _versions.DropDown;
         list.SuspendLayout();
@@ -120,7 +135,8 @@ internal sealed class VersionMenu : ContextMenuStrip
 
         if (versions.Count == 0)
         {
-            _versions.DropDownItems.Add(new ToolStripMenuItem("No versions on the site") { Enabled = false });
+            _versions.DropDownItems.Add(new ToolStripMenuItem(
+                hidden > 0 ? "No stable versions on the site" : "No versions on the site") { Enabled = false });
         }
 
         foreach (Release version in versions)
@@ -133,6 +149,13 @@ internal sealed class VersionMenu : ContextMenuStrip
 
             item.Click += (_, _) => VersionPicked?.Invoke(version, isLatest);
             _versions.DropDownItems.Add(item);
+        }
+
+        if (hidden > 0)
+        {
+            _versions.DropDownItems.Add(new ToolStripSeparator());
+            _versions.DropDownItems.Add(new ToolStripMenuItem(
+                hidden == 1 ? "1 pre-release hidden" : $"{hidden} pre-releases hidden") { Enabled = false });
         }
 
         list.ResumeLayout();

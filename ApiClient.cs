@@ -98,8 +98,17 @@ internal static class ApiUrls
         _ => $"{RepoRoot(site, path)}/tarball/{Uri.EscapeDataString(sha)}"
     };
 
-    /// <summary>The repository's own page: release texts link attachments and source archives under it.</summary>
+    /// <summary>The repository's own page: release texts link the site's source archives under it.</summary>
     internal static string ProjectPage(Site site, string path) => $"{WebRoot(site)}/{path}";
+
+    /// <summary>
+    /// GitLab: where a file attached to a release text ("/uploads/…") downloads
+    /// from, the project's API address. Under the project's page, where the
+    /// text's own link points, gitlab.com now answers 404; the API serves the
+    /// file by the project's path, without its number.
+    /// </summary>
+    internal static string? UploadsRoot(Site site, string path) =>
+        site.Type == ApiType.GitLab ? RepoRoot(site, path) : null;
 
     /// <summary>The releases page in the browser.</summary>
     internal static string ReleasesPage(Site site, string path) => site.Type == ApiType.GitLab
@@ -319,7 +328,8 @@ internal static class ApiClient
     internal static async Task<List<Release>> ListReleasesAsync(Site site, Repo repo, int count, CancellationToken cancel = default)
     {
         string json = await GetJsonAsync(site, ApiUrls.Releases(site, repo.Path, count), cancel) ?? "[]";
-        return Parse(() => ReleaseParser.ParseList(site.Type, json, repo.Path, ApiUrls.ProjectPage(site, repo.Path)));
+        return Parse(() => ReleaseParser.ParseList(site.Type, json, repo.Path,
+            ApiUrls.ProjectPage(site, repo.Path), ApiUrls.UploadsRoot(site, repo.Path)));
     }
 
     /// <summary>
@@ -354,9 +364,21 @@ internal static class ApiClient
     /// <summary>What Refresh shows as Latest; null when the repo has neither releases nor commits.</summary>
     internal static async Task<Release?> CheckLatestAsync(Site site, Repo repo, CancellationToken cancel = default)
     {
-        List<Release> releases = await ListReleasesAsync(site, repo, RefreshCount, cancel);
+        // "Ignore pre-releases": a project that ships nightlies can fill the
+        // first 20 with pre-releases, hiding its last stable one; a whole page
+        // is read before deciding there is none.
+        List<Release> releases = await ListReleasesAsync(site, repo, repo.IgnorePrereleases ? MenuCount : RefreshCount, cancel);
 
-        return ReleaseParser.PickLatest(releases) ?? await GetSourceHeadAsync(site, repo, cancel);
+        if (ReleaseParser.PickLatest(releases, repo.IgnorePrereleases) is { } latest)
+        {
+            return latest;
+        }
+
+        // Only pre-releases, and they are ignored: no Latest, rather than the
+        // newest commit, which would be offered as an update instead.
+        return repo.IgnorePrereleases && releases.Any(r => !r.Draft)
+            ? null
+            : await GetSourceHeadAsync(site, repo, cancel);
     }
 
     /// <summary>Every version for the right-click menu, newest first.</summary>
@@ -484,6 +506,7 @@ internal static class ApiClient
         string? json = await GetJsonAsync(site, ApiUrls.ReleaseByTag(site, repo.Path, version.Tag), cancel, missingIsNull: true)
             ?? throw new ApiException($"Version {version.Tag} is no longer on the site.");
 
-        return Parse(() => ReleaseParser.ParseSingle(site.Type, json, repo.Path, ApiUrls.ProjectPage(site, repo.Path)));
+        return Parse(() => ReleaseParser.ParseSingle(site.Type, json, repo.Path,
+            ApiUrls.ProjectPage(site, repo.Path), ApiUrls.UploadsRoot(site, repo.Path)));
     }
 }

@@ -18,7 +18,8 @@ namespace GitSync;
 /// </summary>
 internal sealed class UpdateAllForm : Form
 {
-    private enum Step { Pending, Choosing, Waiting, Downloading, Updated, Ignored, Failed }
+    /// <param name="Kept">Ignored, and kept on the version on disk for good: pinned there.</param>
+    private enum Step { Pending, Choosing, Waiting, Downloading, Updated, Ignored, Kept, Failed }
 
     private sealed class Item(Repo repo, Site? site)
     {
@@ -304,6 +305,29 @@ internal sealed class UpdateAllForm : Form
 
         Item item = _items[_index];
 
+        // Ignore often means this version is not wanted at all (the repo put
+        // out something unrelated, or a broken build). Asked, then, whether to
+        // stay on the version on disk: pinned there, it is not offered as an
+        // update again; otherwise it is only skipped this time.
+        if (item.Repo.Current is { } current)
+        {
+            DialogResult answer = DarkMessageBox.Show(this,
+                $"Stay on {current.DisplayTag} for \"{item.Repo.Name}\"?\n\n"
+                + "Yes: it becomes the Selected version, and newer versions are not offered as updates. "
+                + "Pick another version from the repository's right-click menu to change that.\n\n"
+                + "No: it is only skipped this time and stays ready to update.",
+                Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+            if (answer == DialogResult.Yes)
+            {
+                RepoStore.SetSelected(item.Repo.Id, current);
+                item.Step = Step.Kept;
+                AnyUpdated = true;
+                await ShowItemAsync(_index + 1);
+                return;
+            }
+        }
+
         if (item.Step != Step.Failed)
         {
             item.Step = Step.Ignored;
@@ -450,9 +474,11 @@ internal sealed class UpdateAllForm : Form
     {
         int updated = _items.Count(i => i.Step == Step.Updated);
         int ignored = _items.Count(i => i.Step == Step.Ignored);
+        int kept = _items.Count(i => i.Step == Step.Kept);
         List<Item> failed = [.. _items.Where(i => i.Step == Step.Failed)];
 
-        _title.Text = $"Done: {updated} updated, {ignored} ignored, {failed.Count} failed.";
+        _title.Text = $"Done: {updated} updated, " + (kept > 0 ? $"{kept} kept on their version, " : string.Empty)
+                    + $"{ignored} ignored, {failed.Count} failed.";
 
         // The failures collected in one place: the problem line only kept the last one.
         const int Shown = 8;
@@ -507,6 +533,7 @@ internal sealed class UpdateAllForm : Form
             Step.Updated when item.Problem.Length > 0 => ("Updated", Theme.Amber),
             Step.Updated => ("Updated", Theme.Success),
             Step.Ignored => ("Ignored", Theme.DimText),
+            Step.Kept => ("Kept current", Theme.DimText),
             Step.Failed => ("Failed", Theme.Error),
             _ => ("Pending", Theme.DimText)
         };

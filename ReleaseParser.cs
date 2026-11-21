@@ -15,12 +15,16 @@ namespace GitSync;
 internal static partial class ReleaseParser
 {
     /// <param name="projectUrl">
-    /// The repository's web address ("https://gitlab.com/group/project"), for
-    /// links in the release text: GitLab writes attached files as
-    /// "/uploads/…" under it, and the site's own source archives live under
-    /// it too. Null reads only absolute links and skips no archives.
+    /// The repository's web address ("https://gitlab.com/group/project"): the
+    /// site's own source archives, linked from a release text, live under it.
+    /// Null skips no archives.
     /// </param>
-    internal static List<Release> ParseList(ApiType type, string json, string repoPath, string? projectUrl = null)
+    /// <param name="uploadsRoot">
+    /// GitLab: where a file the release text links as "/uploads/…" downloads
+    /// from (<see cref="ApiUrls.UploadsRoot"/>). Null resolves those links
+    /// under <paramref name="projectUrl"/>, where older GitLab served them.
+    /// </param>
+    internal static List<Release> ParseList(ApiType type, string json, string repoPath, string? projectUrl = null, string? uploadsRoot = null)
     {
         using JsonDocument document = JsonDocument.Parse(json);
 
@@ -29,23 +33,26 @@ internal static partial class ReleaseParser
             throw new FormatException("Expected a list of releases.");
         }
 
-        return [.. document.RootElement.EnumerateArray().Select(e => ParseOne(type, e, repoPath, projectUrl))];
+        return [.. document.RootElement.EnumerateArray().Select(e => ParseOne(type, e, repoPath, new LinkPlaces(projectUrl, uploadsRoot)))];
     }
 
-    internal static Release ParseSingle(ApiType type, string json, string repoPath, string? projectUrl = null)
+    internal static Release ParseSingle(ApiType type, string json, string repoPath, string? projectUrl = null, string? uploadsRoot = null)
     {
         using JsonDocument document = JsonDocument.Parse(json);
-        return ParseOne(type, document.RootElement, repoPath, projectUrl);
+        return ParseOne(type, document.RootElement, repoPath, new LinkPlaces(projectUrl, uploadsRoot));
     }
 
-    private static Release ParseOne(ApiType type, JsonElement e, string repoPath, string? projectUrl) => type switch
+    /// <summary>Where the links of a release text lead when they are not written out in full.</summary>
+    private sealed record LinkPlaces(string? ProjectPage, string? UploadsRoot);
+
+    private static Release ParseOne(ApiType type, JsonElement e, string repoPath, LinkPlaces places) => type switch
     {
-        ApiType.GitHub => ParseGitHub(e, repoPath, projectUrl),
-        ApiType.GitLab => ParseGitLab(e, repoPath, projectUrl),
-        _ => ParseGitea(e, repoPath, projectUrl)
+        ApiType.GitHub => ParseGitHub(e, repoPath, places),
+        ApiType.GitLab => ParseGitLab(e, repoPath, places),
+        _ => ParseGitea(e, repoPath, places)
     };
 
-    private static Release ParseGitHub(JsonElement e, string repoPath, string? projectUrl)
+    private static Release ParseGitHub(JsonElement e, string repoPath, LinkPlaces places)
     {
         string tag = Text(e, "tag_name");
         var files = new List<ReleaseFile>();
@@ -64,10 +71,10 @@ internal static partial class ReleaseParser
             Date(e, "published_at") ?? Date(e, "created_at"),
             Flag(e, "prerelease"), Flag(e, "draft"),
             Text(e, "html_url"), files, Text(e, "zipball_url"), Text(e, "tarball_url"), repoPath,
-            Text(e, "body"), projectUrl);
+            Text(e, "body"), places);
     }
 
-    private static Release ParseGitLab(JsonElement e, string repoPath, string? projectUrl)
+    private static Release ParseGitLab(JsonElement e, string repoPath, LinkPlaces places)
     {
         string tag = Text(e, "tag_name");
         var files = new List<ReleaseFile>();
@@ -81,8 +88,20 @@ internal static partial class ReleaseParser
                 foreach (JsonElement link in links.EnumerateArray())
                 {
                     // direct_asset_url is the permanent address; url may point at a page.
-                    string url = Text(link, "direct_asset_url");
-                    files.Add(new ReleaseFile(Text(link, "name"), -1, url.Length > 0 ? url : Text(link, "url")));
+                    string direct = Text(link, "direct_asset_url");
+                    string url = direct.Length > 0 ? direct : Text(link, "url");
+
+                    // The link's name is a title shown on the release page, often
+                    // the file's name but sometimes a sentence: saved under that,
+                    // the file lost its extension. The address's file name then.
+                    string name = Text(link, "name");
+
+                    if (!IsDownloadName(name) && FileNameOf(url) is { } fromAddress && IsDownloadName(fromAddress))
+                    {
+                        name = fromAddress;
+                    }
+
+                    files.Add(new ReleaseFile(name, -1, url));
                 }
             }
 
@@ -107,10 +126,10 @@ internal static partial class ReleaseParser
             Date(e, "released_at") ?? Date(e, "created_at"),
             Flag(e, "upcoming_release"), draft: false,
             page, files, sourceZip, sourceTar, repoPath,
-            Text(e, "description"), projectUrl);
+            Text(e, "description"), places);
     }
 
-    private static Release ParseGitea(JsonElement e, string repoPath, string? projectUrl)
+    private static Release ParseGitea(JsonElement e, string repoPath, LinkPlaces places)
     {
         string tag = Text(e, "tag_name");
         var files = new List<ReleaseFile>();
@@ -127,7 +146,7 @@ internal static partial class ReleaseParser
             Date(e, "published_at") ?? Date(e, "created_at"),
             Flag(e, "prerelease"), Flag(e, "draft"),
             Text(e, "html_url"), files, Text(e, "zipball_url"), Text(e, "tarball_url"), repoPath,
-            Text(e, "body"), projectUrl);
+            Text(e, "body"), places);
     }
 
     /// <summary>
@@ -137,11 +156,11 @@ internal static partial class ReleaseParser
     private static Release Build(
         string tag, string title, DateTimeOffset? date, bool prerelease, bool draft,
         string page, List<ReleaseFile> files, string sourceZip, string sourceTar, string repoPath,
-        string notes, string? projectUrl)
+        string notes, LinkPlaces places)
     {
         VersionKind kind = VersionKind.Release;
         List<ReleaseFile> sources = SourceFiles(repoPath, sourceZip, sourceTar);
-        files.AddRange(LinkedFiles(notes, files, projectUrl));
+        files.AddRange(LinkedFiles(notes, files, places.ProjectPage, places.UploadsRoot));
 
         if (files.Count == 0 && sources.Count > 0)
         {
@@ -195,6 +214,19 @@ internal static partial class ReleaseParser
         ".dmg", ".pkg", ".apk", ".aab", ".ipa", ".deb", ".rpm", ".flatpak", ".snap", ".jar", ".iso"
     ];
 
+    /// <summary>The file name an address ends with, unescaped ("My%20App.zip" is "My App.zip"), or null.</summary>
+    internal static string? FileNameOf(string address)
+    {
+        if (!Uri.TryCreate(address, UriKind.Absolute, out Uri? uri))
+        {
+            return null;
+        }
+
+        string path = uri.AbsolutePath;
+        string name = Uri.UnescapeDataString(path[(path.LastIndexOf('/') + 1)..]);
+        return name.Length > 0 ? name : null;
+    }
+
     internal static bool IsDownloadName(string name) =>
         DownloadTypes.Any(type => name.Length > type.Length && name.EndsWith(type, StringComparison.OrdinalIgnoreCase));
 
@@ -209,7 +241,7 @@ internal static partial class ReleaseParser
     /// the site's own source archives (offered by "Show source code"), and a
     /// name already uploaded to the release or linked earlier in the text.
     /// </summary>
-    internal static List<ReleaseFile> LinkedFiles(string notes, IEnumerable<ReleaseFile> uploaded, string? projectUrl)
+    internal static List<ReleaseFile> LinkedFiles(string notes, IEnumerable<ReleaseFile> uploaded, string? projectUrl, string? uploadsRoot = null)
     {
         var found = new List<ReleaseFile>();
 
@@ -226,7 +258,9 @@ internal static partial class ReleaseParser
         {
             string address = match.Groups["absolute"].Success
                 ? match.Groups["absolute"].Value.TrimEnd('.', ',', ';', ':', '!', '?')
-                : project.Length > 0 ? project + match.Groups["upload"].Value : string.Empty;
+                : uploadsRoot is { Length: > 0 } ? uploadsRoot.TrimEnd('/') + match.Groups["upload"].Value
+                : project.Length > 0 ? project + match.Groups["upload"].Value
+                : string.Empty;
 
             if (!Uri.TryCreate(address, UriKind.Absolute, out Uri? uri)
                 || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
@@ -241,8 +275,7 @@ internal static partial class ReleaseParser
                 continue;
             }
 
-            string path = uri.AbsolutePath;
-            string name = Uri.UnescapeDataString(path[(path.LastIndexOf('/') + 1)..]);
+            string name = FileNameOf(uri.AbsoluteUri) ?? string.Empty;
 
             if (IsDownloadName(name) && names.Add(name))
             {
@@ -256,7 +289,8 @@ internal static partial class ReleaseParser
     /// <summary>
     /// An address written out in the text (markdown link, bare or in HTML: it
     /// stops at a space, bracket, quote, backtick, asterisk or table bar), or
-    /// a GitLab attachment, which markdown links as "(/uploads/…)".
+    /// a GitLab attachment, which markdown links as "(/uploads/…)" and which
+    /// downloads from the project's API address (see <see cref="ApiUrls.UploadsRoot"/>).
     /// </summary>
     [GeneratedRegex(@"(?<absolute>https?://[^\s<>()\[\]{}""'`*|\\]+)|\]\((?<upload>/uploads/[^)\s]+)\)", RegexOptions.IgnoreCase)]
     private static partial Regex LinkPattern();
@@ -266,11 +300,12 @@ internal static partial class ReleaseParser
     /// pre-release when the repo publishes nothing else (many emulators only
     /// ship nightly pre-releases). Drafts never count.
     /// </summary>
-    internal static Release? PickLatest(IEnumerable<Release> releases)
+    /// <param name="stableOnly">"Ignore pre-releases": no pre-release even then; null instead.</param>
+    internal static Release? PickLatest(IEnumerable<Release> releases, bool stableOnly = false)
     {
         List<Release> published = [.. NewestFirst(releases.Where(r => !r.Draft))];
 
-        return published.FirstOrDefault(r => !r.Prerelease) ?? published.FirstOrDefault();
+        return published.FirstOrDefault(r => !r.Prerelease) ?? (stableOnly ? null : published.FirstOrDefault());
     }
 
     /// <summary>

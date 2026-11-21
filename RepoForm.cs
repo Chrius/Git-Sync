@@ -33,6 +33,7 @@ internal sealed class RepoForm : Form
     private readonly ComboBox _filter;
     private readonly CheckBox _keepPrevious;
     private readonly CheckBox _ignoreOnRefresh;
+    private readonly CheckBox _ignorePrereleases;
     private readonly Panel _keepFrame;
     private readonly TextBox _keepVersions;
     private readonly Label _keepLabel;
@@ -94,6 +95,9 @@ internal sealed class RepoForm : Form
     /// <summary>New entry, or Edit moved it to another site or repository: it needs a check.</summary>
     internal bool AddressChanged { get; private set; }
 
+    /// <summary>"Ignore pre-releases" was ticked or unticked in Edit: Latest may be another release now.</summary>
+    internal bool PrereleaseRuleChanged { get; private set; }
+
     /// <param name="dropped">
     /// A new entry from a link dragged onto the main window: site, repository
     /// and folder come filled in, and only the name is left to type.
@@ -115,8 +119,9 @@ internal sealed class RepoForm : Form
 
         Text = editing is null ? "Add Repository" : "Edit Repository";
         ShowIcon = false;
-        // 26 more than before "Ignore on refresh": the same gap above the buttons.
-        ClientSize = new Size(480, 424);
+        // 26 more for each checkbox under "Keep previous versions": the gap
+        // above the buttons stays the same.
+        ClientSize = new Size(480, 450);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -201,6 +206,15 @@ internal sealed class RepoForm : Form
         };
         Controls.Add(_ignoreOnRefresh);
 
+        _ignorePrereleases = new CheckBox
+        {
+            Text = "Ignore pre-releases",
+            AutoSize = true,
+            Location = new Point(Edge, _ignoreOnRefresh.Top + 26),
+            TabIndex = 10
+        };
+        Controls.Add(_ignorePrereleases);
+
         // Digits only: typed ones through KeyPress, pasted ones cleaned on TextChanged.
         _keepVersions.KeyPress += (_, e) =>
         {
@@ -220,9 +234,9 @@ internal sealed class RepoForm : Form
             }
         };
 
-        _save = new Button { Text = "Save", Size = new Size(96, 30), TabIndex = 10 };
+        _save = new Button { Text = "Save", Size = new Size(96, 30), TabIndex = 11 };
         _save.Click += Save;
-        _cancel = new Button { Text = "Cancel", Size = new Size(96, 30), TabIndex = 11, DialogResult = DialogResult.Cancel };
+        _cancel = new Button { Text = "Cancel", Size = new Size(96, 30), TabIndex = 12, DialogResult = DialogResult.Cancel };
 
         int buttonsTop = ClientSize.Height - Edge - 30;
         _cancel.Location = new Point(ClientSize.Width - Edge - 96, buttonsTop);
@@ -260,6 +274,7 @@ internal sealed class RepoForm : Form
             _keepPrevious.Checked = editing.KeepPrevious;
             _keepVersions.Text = editing.KeepVersions.ToString(System.Globalization.CultureInfo.InvariantCulture);
             _ignoreOnRefresh.Checked = editing.IgnoreOnRefresh;
+            _ignorePrereleases.Checked = editing.IgnorePrereleases;
 
             // Keeps following Name and Repository only if it was never changed
             // by hand ("Name - repo", numbered or not) and nothing is downloaded yet.
@@ -777,7 +792,9 @@ internal sealed class RepoForm : Form
         repo.FilterId = filterId;
         repo.KeepPrevious = _keepPrevious.Checked;
         repo.KeepVersions = KeepVersions();
+        bool prereleaseRuleChanged = _editing is not null && _editing.IgnorePrereleases != _ignorePrereleases.Checked;
         repo.IgnoreOnRefresh = _ignoreOnRefresh.Checked;
+        repo.IgnorePrereleases = _ignorePrereleases.Checked;
 
         try
         {
@@ -820,6 +837,7 @@ internal sealed class RepoForm : Form
 
         Saved = repo;
         AddressChanged = addressChanged;
+        PrereleaseRuleChanged = prereleaseRuleChanged;
         DialogResult = DialogResult.OK;
     }
 

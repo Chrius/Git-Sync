@@ -887,22 +887,20 @@ internal sealed class MainForm : Form
                 return;
             }
 
-            List<ReleaseFile> chosen = files;
+            // Always asked, a single file too: a repo sometimes publishes a new
+            // version of something unrelated (a tool, a translation pack), and
+            // downloading it straight away replaced the real release on disk.
+            HashSet<string> preChecked = DownloadPaths.PreChecked(
+                files, tag, repo.CurrentFiles, repo.Current?.DisplayTag);
 
-            if (files.Count > 1 || redownload)
+            using var picker = new FilePickerForm(repo, release, files, preChecked, redownload);
+
+            if (picker.ShowDialog(this) != DialogResult.OK || picker.Chosen.Count == 0)
             {
-                HashSet<string> preChecked = DownloadPaths.PreChecked(
-                    files, tag, repo.CurrentFiles, repo.Current?.DisplayTag);
-
-                using var picker = new FilePickerForm(repo, release, files, preChecked, redownload);
-
-                if (picker.ShowDialog(this) != DialogResult.OK || picker.Chosen.Count == 0)
-                {
-                    return;
-                }
-
-                chosen = picker.Chosen;
+                return;
             }
+
+            List<ReleaseFile> chosen = picker.Chosen;
 
             var progress = new Progress<DownloadProgress>(value =>
             {
@@ -1022,7 +1020,8 @@ internal sealed class MainForm : Form
 
         ReloadAll(keepScroll: true);
 
-        if (window.AddressChanged)
+        // A new address, or pre-releases now ignored or not: Latest is checked again.
+        if (window.AddressChanged || window.PrereleaseRuleChanged)
         {
             _ = CheckAsync(saved, _closing.Token);
         }

@@ -247,6 +247,7 @@ internal sealed class RepoRow : Control
         // A repo that has never answered has no known Latest: "No releases" would be a guess.
         string latestEmpty = status == RepoStatus.NeverChecked ? "Not checked"
             : Repo.Error.Length > 0 ? "—"
+            : Repo.IgnorePrereleases ? "No stable release"
             : "No releases";
 
         DrawColumn(g, 0, "Latest", Repo.Latest, latestEmpty, columnsTop, smallHeight);

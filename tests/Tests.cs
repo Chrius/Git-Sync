@@ -36,6 +36,7 @@ internal static class Tests
         TestTokenHosts();
         TestVersionState();
         TestDatabaseSeed();
+        TestFileFilters();
         TestFilters();
         TestRepoStore();
         TestKeepPrevious();
@@ -566,6 +567,46 @@ internal static class Tests
             ReleaseParser.PickLatest(ReleaseParser.ParseList(ApiType.GitHub, onlyDraft, "o/r"))?.Tag);
 
         Check("empty list -> none", null, ReleaseParser.PickLatest([])?.Tag);
+
+        // "Ignore pre-releases": stable or nothing.
+        Check("ignoring pre-releases: still the newest stable", "v1.4.0", ReleaseParser.PickLatest(list, stableOnly: true)?.Tag);
+        Check("ignoring pre-releases: only pre-releases -> none", null,
+            ReleaseParser.PickLatest(ReleaseParser.ParseList(ApiType.GitHub, onlyPre, "o/r"), stableOnly: true)?.Tag);
+    }
+
+    /// <summary>The ignored files of Settings → Files.</summary>
+    private static void TestFileFilters()
+    {
+        Section("Ignored files");
+
+        Check("one pattern per line; blanks, spaces and repeats dropped", "*.tar.gz|*-linux-*|app?.zip",
+            string.Join("|", FileFilters.Parse("*.tar.gz\r\n\r\n  *-linux-*  \n*.TAR.GZ\napp?.zip\n")));
+        Check("nothing typed: nothing hidden", false, FileFilters.FromText(string.Empty).Hides("anything.zip"));
+
+        var filters = FileFilters.FromText("*.tar.gz\n*-linux-*\napp-v?.zip\nreadme.txt\nodd(1)+[x].7z");
+        string Hidden(params string[] names) => string.Join(",", names.Select(n => filters.Hides(n) ? "hidden" : "shown"));
+
+        Check("*.tar.gz: every file of that type, any case", "hidden,hidden,shown,shown",
+            Hidden("tool-1.2.tar.gz", "TOOL.TAR.GZ", "tool.tar.gz.sig", "tool.zip"));
+        Check("*-linux-*: \"-linux-\" anywhere in the name", "hidden,hidden,shown,shown",
+            Hidden("tool-linux-x64.zip", "a-linux-b", "linux-tool.zip", "tool-windows-x64.zip"));
+        Check("? is one character", "hidden,shown,shown", Hidden("app-v1.zip", "app-v10.zip", "app-v.zip"));
+        Check("no wildcard: the whole name, any case", "hidden,shown", Hidden("README.TXT", "readme.txt.bak"));
+        Check("other characters are themselves", "hidden,shown", Hidden("odd(1)+[x].7z", "odd1x.7z"));
+
+        // Whatever is typed, matching stays quick.
+        var clock = Stopwatch.StartNew();
+        bool slow = FileFilters.FromText("*a*a*a*a*a*a*a*a*a*a*a*a*b").Hides(new string('a', 5000));
+        clock.Stop();
+        Check("a pattern of many stars against a long name: no match", false, slow);
+        Require($"... and quickly ({clock.ElapsedMilliseconds} ms)", clock.ElapsedMilliseconds < 1000);
+
+        // Saved by the Files tab: the box's \r\n kept as \n.
+        string before = PreferenceStore.IgnoredFiles();
+        PreferenceStore.SetIgnoredFiles("*.tar.gz\r\n*-linux-*");
+        Check("saved with one line per pattern", "*.tar.gz\n*-linux-*", PreferenceStore.IgnoredFiles());
+        Check("read back as two patterns", 2, FileFilters.Saved().Count);
+        PreferenceStore.SetIgnoredFiles(before);
     }
 
     private static void TestSourceHead()
@@ -944,6 +985,14 @@ internal static class Tests
         back.IgnoreOnRefresh = false;
         RepoStore.Save(back);
         Check("ignore on refresh: unticked again", false, RepoStore.Get(id)?.IgnoreOnRefresh);
+
+        Check("ignore pre-releases: off for a new repo", false, RepoStore.Get(id)?.IgnorePrereleases);
+        back.IgnorePrereleases = true;
+        RepoStore.Save(back);
+        Check("ignore pre-releases: saved by Edit", true, RepoStore.Get(id)?.IgnorePrereleases);
+        back.IgnorePrereleases = false;
+        RepoStore.Save(back);
+        Check("ignore pre-releases: unticked again", false, RepoStore.Get(id)?.IgnorePrereleases);
         Check("ignore on refresh: back in a refresh", 1, VersionState.ToRefresh(RepoStore.List().Where(r => r.Id == id)).Count);
 
         RepoStore.SetError(id, "Not found (404).", checkedAt.AddHours(1));
@@ -2277,10 +2326,20 @@ internal static class Tests
         Check("a file uploaded to the release is not listed twice", 0,
             Linked("[app](https://github.com/o/r/releases/download/v1/app.zip)", "https://github.com/o/r", "app.zip").Count);
         Check("the same file linked twice is listed once", 1, Linked("[a](https://x.org/app.zip) or https://x.org/app.zip").Count);
-        Check("GitLab attachment, under the project",
+        // GitLab attachments download through the API: under the project's
+        // page, where the text points, gitlab.com answers 404.
+        Check("GitLab attachment, through the API by the project's path",
+            "build.tar.gz <- https://gitlab.com/api/v4/projects/g%2Fp/uploads/abc123/build.tar.gz",
+            One(ReleaseParser.LinkedFiles("[build](/uploads/abc123/build.tar.gz)", [], "https://gitlab.com/g/p", ApiUrls.UploadsRoot(GitLabSite, "g/p"))));
+        Check("GitLab attachment of a nested group", "https://gitlab.com/api/v4/projects/g%2Fsub%2Fp/uploads/abc123/build.tar.gz",
+            ReleaseParser.LinkedFiles("[build](/uploads/abc123/build.tar.gz)", [], null, ApiUrls.UploadsRoot(GitLabSite, "g/sub/p"))[0].Url);
+        Check("no API address known: under the project, as older GitLab served it",
             "build.tar.gz <- https://gitlab.com/g/p/uploads/abc123/build.tar.gz",
             One(Linked("[build](/uploads/abc123/build.tar.gz)", "https://gitlab.com/g/p")));
-        Check("GitLab attachment with no project address known: skipped", 0, Linked("[build](/uploads/abc123/build.tar.gz)", null).Count);
+        Check("GitLab attachment with no address known at all: skipped", 0, Linked("[build](/uploads/abc123/build.tar.gz)", null).Count);
+        Check("only GitLab has an uploads address", null, ApiUrls.UploadsRoot(new Site { Host = "github.com", Type = ApiType.GitHub }, "o/r"));
+        Check("file name of an address", "My App.exe", ReleaseParser.FileNameOf("https://x.org/dl/My%20App.exe?raw=1"));
+        Check("no file name in an address", null, ReleaseParser.FileNameOf("https://x.org/"));
         Check("not http: skipped", 0, Linked("ftp://x.org/app.zip").Count);
         Check("no text: nothing", 0, Linked(string.Empty).Count);
         Check("download types", "True,True,True,True,False,False",
@@ -2306,11 +2365,29 @@ internal static class Tests
               "description":"Build: [win](/uploads/f00d/app-win.zip)",
               "assets":{"links":[],"sources":[{"format":"zip","url":"https://gitlab.com/g/p/-/archive/v1/p-v1.zip"}]}}]
             """;
-        Release lab = ReleaseParser.ParseList(ApiType.GitLab, gitlab, "g/p", "https://gitlab.com/g/p").Single();
-        Check("gitlab: attachment from the description", "app-win.zip <- https://gitlab.com/g/p/uploads/f00d/app-win.zip",
+        Release lab = ReleaseParser.ParseList(ApiType.GitLab, gitlab, "g/p", "https://gitlab.com/g/p", ApiUrls.UploadsRoot(GitLabSite, "g/p")).Single();
+        Check("gitlab: attachment from the description", "app-win.zip <- https://gitlab.com/api/v4/projects/g%2Fp/uploads/f00d/app-win.zip",
             lab.Files.Count == 1 ? $"{lab.Files[0].Name} <- {lab.Files[0].Url}" : $"{lab.Files.Count} files");
         Check("gitlab: so not source code", VersionKind.Release, lab.Kind);
+
+        // A release link titled with a sentence, pointing at an attachment the
+        // text links too (a release seen on gitlab.com on 2026-11-19, names made up).
+        string titled = """
+            [{"tag_name":"v2.0","name":"v2.0","released_at":"2026-11-17T23:59:49Z","upcoming_release":false,
+              "description":"What's new...\n\n[App-Setup-2.0.exe](/uploads/0123abcd/App-Setup-2.0.exe)",
+              "assets":{"links":[{"id":7,"name":"Fixed the thing that broke last time",
+                                  "url":"https://gitlab.com/-/project/123456/uploads/0123abcd/App-Setup-2.0.exe",
+                                  "direct_asset_url":"https://gitlab.com/-/project/123456/uploads/0123abcd/App-Setup-2.0.exe",
+                                  "link_type":"other"}],
+                        "sources":[{"format":"zip","url":"https://gitlab.com/g/p/-/archive/v2.0/p-v2.0.zip"}]}}]
+            """;
+        Release named = ReleaseParser.ParseList(ApiType.GitLab, titled, "g/p", "https://gitlab.com/g/p", ApiUrls.UploadsRoot(GitLabSite, "g/p")).Single();
+        Check("gitlab: a link titled with a sentence is saved under its file's name, once",
+            "App-Setup-2.0.exe <- https://gitlab.com/-/project/123456/uploads/0123abcd/App-Setup-2.0.exe",
+            named.Files.Count == 1 ? $"{named.Files[0].Name} <- {named.Files[0].Url}" : string.Join("|", named.Files.Select(f => f.Name)));
     }
+
+    private static readonly Site GitLabSite = new() { Host = "gitlab.com", Type = ApiType.GitLab };
 
     private static void TestSorting()
     {
@@ -2955,6 +3032,7 @@ internal static class Tests
             {
                 Id = 1, Name = "Pokémon Tool", SiteId = 1, Path = "o/poke", Folder = "Poke", FilterId = 2, KeepPrevious = true, KeepVersions = 3,
                 IgnoreOnRefresh = true,
+                IgnorePrereleases = true,
                 Selected = new VersionRef("v1.2", pinDate, VersionKind.Release),
                 Current = new VersionRef("v1.1-current", null, VersionKind.Release),
                 Latest = new VersionRef("v1.3-latest", null, VersionKind.Release),
@@ -3012,6 +3090,8 @@ internal static class Tests
         Check("round trip: versions to keep", 3, poke.KeepVersions);
         Check("round trip: ignore on refresh", true, poke.IgnoreOnRefresh);
         Check("ignore on refresh written for every repo", 2, json.Split("\"ignoreOnRefresh\"").Length - 1);
+        Check("round trip: ignore pre-releases", true, poke.IgnorePrereleases);
+        Check("ignore pre-releases written for every repo", 2, json.Split("\"ignorePrereleases\"").Length - 1);
         Check("versions to keep written for every repo, 0 included", 2, json.Split("versionsToKeep").Length - 1);
         Check("0 written as such", true, json.Contains("\"versionsToKeep\": 0", StringComparison.Ordinal));
         Check("pinned version not exported: whoever imports picks their own", false,
@@ -3023,6 +3103,7 @@ internal static class Tests
         Check("round trip: in no folder", 0, loose.Filter.Count);
         Check("round trip: not kept", false, loose.KeepPrevious);
         Check("round trip: not ignored", false, loose.IgnoreOnRefresh);
+        Check("round trip: pre-releases not ignored", false, loose.IgnorePrereleases);
 
         // ----- files that are refused whole -----
 
@@ -3068,7 +3149,7 @@ internal static class Tests
             ,"filters":[["ImportRoot"],["ImportRoot","PC"],["OnlyInFile"]],
              "repos":[
                {"name":"A","site":"GitHub.com","api":"GitHub","repository":"o/import-a","folder":"A - a","filter":["ImportRoot","PC"],
-                "keepPreviousVersions":true,"versionsToKeep":4,"ignoreOnRefresh":true,"selectedVersion":{"tag":"v2","kind":"Release"}},
+                "keepPreviousVersions":true,"versionsToKeep":4,"ignoreOnRefresh":true,"ignorePrereleases":true,"selectedVersion":{"tag":"v2","kind":"Release"}},
                {"name":"B","site":"git.import-test.org","api":"Gitea","repository":"me/import-b","folder":"B","filter":[]},
                {"name":"C","site":"gitlab.com","api":"GitLab","repository":"g/s/import-c","folder":"C","filter":["ImportRoot"]}
              ]}
@@ -3094,6 +3175,7 @@ internal static class Tests
         Check("keep previous imported", true, a.KeepPrevious);
         Check("versions to keep imported", 4, a.KeepVersions);
         Check("ignore on refresh imported", true, a.IgnoreOnRefresh);
+        Check("ignore pre-releases imported", true, a.IgnorePrereleases);
         Check("a pin in an older file is ignored", null, a.Selected);
         Check("nothing downloaded yet", null, a.Current);
 

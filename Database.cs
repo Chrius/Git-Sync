@@ -100,6 +100,7 @@ internal static class Database
         EnsureColumn(connection, "Repos", "KeepPrevious", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "Repos", "KeepVersions", "INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(connection, "Repos", "IgnoreOnRefresh", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(connection, "Repos", "IgnorePrereleases", "INTEGER NOT NULL DEFAULT 0");
 
         EnsureSites(connection);
     }

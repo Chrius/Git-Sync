@@ -37,6 +37,13 @@ internal static class PreferenceStore
 
     internal static void SetMoveOldVersions(bool on) => Set(MoveOldKey, on ? "1" : "0");
 
+    private const string IgnoredFilesKey = "IgnoredFiles";
+
+    /// <summary>The Files tab's patterns of file names to hide, one per line (see <see cref="FileFilters"/>).</summary>
+    internal static string IgnoredFiles() => Get(IgnoredFilesKey) ?? string.Empty;
+
+    internal static void SetIgnoredFiles(string text) => Set(IgnoredFilesKey, text.Replace("\r\n", "\n", StringComparison.Ordinal));
+
     internal static string? Get(string key)
     {
         using SqliteConnection connection = Database.Open();
