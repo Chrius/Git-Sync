@@ -492,7 +492,7 @@ internal sealed class DataTab : UserControl
             DialogResult leave = DarkMessageBox.Show(this,
                 $"Use the new folder without the current files?\n\nThey stay in\n{from}\n"
                 + "and Git-Sync forgets them: it will not move, delete or count them any more. "
-                + "Each repository keeps its version; Redownload… on its menu fetches it into the new folder.",
+                + "Each repository keeps its version; Redownload on its menu fetches it into the new folder.",
                 "Settings", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
 
                 // "No" by default: leaving every file behind is not done with an Enter pressed by mistake.

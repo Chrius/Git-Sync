@@ -6,8 +6,8 @@ namespace GitSync;
 
 /// <summary>
 /// "Automation" tab: checking every repository by itself on a schedule,
-/// whether downloads offer the source archives, and whether Git-Sync looks
-/// for a newer version of itself when it opens. Saved as soon as it changes,
+/// what happens to files around a download, and whether Git-Sync looks for
+/// a newer version of itself when it opens. Saved as soon as it changes,
 /// like the Filters tab; the main window picks the new settings up when
 /// Settings closes.
 /// </summary>
@@ -23,8 +23,6 @@ internal sealed class AutomationTab : UserControl
     private readonly Label _hint;
     private readonly Label _last;
     private readonly Panel _separator;
-    private readonly CheckBox _showSource;
-    private readonly Label _sourceHint;
     private readonly CheckBox _readme;
     private readonly Label _readmeHint;
     private readonly CheckBox _moveOld;
@@ -79,36 +77,11 @@ internal sealed class AutomationTab : UserControl
         _separator = new Panel { BackColor = Theme.Separator, Height = 1 };
         Controls.Add(_separator);
 
-        _showSource = new CheckBox
-        {
-            Text = "Show source code when downloading",
-            AutoSize = true,
-            TabIndex = 2
-        };
-        _showSource.CheckedChanged += (_, _) =>
-        {
-            if (!_filling)
-            {
-                PreferenceStore.SetShowSource(_showSource.Checked);
-            }
-        };
-        Controls.Add(_showSource);
-
-        _sourceHint = new Label
-        {
-            AutoSize = false,
-            ForeColor = Theme.DimText,
-            Text = "Lists the Source code (zip) and Source code (tar.gz) of a release with its "
-                 + "other files, so they can be downloaded too. When off, only a release with no "
-                 + "files of its own offers its source, as a zip."
-        };
-        Controls.Add(_sourceHint);
-
         _readme = new CheckBox
         {
             Text = "Download README.md",
             AutoSize = true,
-            TabIndex = 3
+            TabIndex = 2
         };
         _readme.CheckedChanged += (_, _) =>
         {
@@ -132,7 +105,7 @@ internal sealed class AutomationTab : UserControl
         {
             Text = "Move previous versions to a different folder",
             AutoSize = true,
-            TabIndex = 4
+            TabIndex = 3
         };
         _moveOld.CheckedChanged += (_, _) =>
         {
@@ -161,7 +134,7 @@ internal sealed class AutomationTab : UserControl
         {
             Text = "Check for updates on launch",
             AutoSize = true,
-            TabIndex = 5
+            TabIndex = 4
         };
         _appUpdates.CheckedChanged += (_, _) =>
         {
@@ -204,9 +177,7 @@ internal sealed class AutomationTab : UserControl
         _last.SetBounds(0, _hint.Bottom + 14, width, 2 * _last.Font.Height + 4);
 
         _separator.SetBounds(0, _last.Bottom + 14, width, 1);
-        _showSource.Location = new Point(0, _separator.Bottom + 16);
-        _sourceHint.SetBounds(Indent, _showSource.Bottom + 6, width - Indent, TextHeight(_sourceHint, width - Indent));
-        _readme.Location = new Point(0, _sourceHint.Bottom + 16);
+        _readme.Location = new Point(0, _separator.Bottom + 16);
         _readmeHint.SetBounds(Indent, _readme.Bottom + 6, width - Indent, TextHeight(_readmeHint, width - Indent));
         _moveOld.Location = new Point(0, _readmeHint.Bottom + 16);
         _moveOldHint.SetBounds(Indent, _moveOld.Bottom + 6, width - Indent, TextHeight(_moveOldHint, width - Indent));
@@ -226,7 +197,6 @@ internal sealed class AutomationTab : UserControl
         _filling = true;
         _enabled.Checked = settings.Enabled;
         _interval.SelectedIndex = Array.FindIndex(AutoCheck.Intervals, i => i.Minutes == settings.Minutes);
-        _showSource.Checked = PreferenceStore.ShowSource();
         _readme.Checked = PreferenceStore.DownloadReadme();
         _moveOld.Checked = PreferenceStore.MoveOldVersions();
         _appUpdates.Checked = AppUpdate.Enabled();

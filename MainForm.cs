@@ -841,7 +841,7 @@ internal sealed class MainForm : Form
     /// which files when there is more than one, and downloads them.
     /// </summary>
     /// <param name="redownload">
-    /// "Redownload…" on the right-click menu: the Current version instead of
+    /// "Redownload" on the right-click menu: the Current version instead of
     /// the target, and the file picker always, with what is on disk ticked.
     /// </param>
     private async void DownloadRepo(Repo listed, bool redownload = false)
@@ -921,6 +921,103 @@ internal sealed class MainForm : Form
             {
                 SetStatus($"{repo.Name}: {tag} downloaded {(redownload ? "again " : "")}"
                           + (chosen.Count == 1 ? "(1 file)." : $"({chosen.Count} files)."), Theme.DimText);
+            }
+        }
+        catch (ApiException error)
+        {
+            if (!IsDisposed)
+            {
+                Warn($"{repo.Name}: {error.Message}");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        finally
+        {
+            finished = true;
+            _downloads.Remove(repo.Id);
+
+            if (!IsDisposed)
+            {
+                _list.RowOf(repo.Id)?.SetProgress(null);
+                ReloadRepo(repo.Id);
+                Resort();
+            }
+        }
+    }
+
+    /// <summary>
+    /// "Bulk Download" on the right-click menu: files of many versions picked
+    /// at once, then downloaded one version after another with the row's
+    /// progress, as a single download. The Selected version is never changed.
+    /// </summary>
+    private async void BulkDownloadRepo(Repo listed)
+    {
+        if (_downloads.ContainsKey(listed.Id) || SiteOf(listed) is not { } site)
+        {
+            return;
+        }
+
+        List<BulkChoice> chosen;
+
+        using (var window = new BulkDownloadForm(RepoStore.Get(listed.Id) ?? listed, site))
+        {
+            if (window.ShowDialog(this) != DialogResult.OK || window.Chosen.Count == 0)
+            {
+                return;
+            }
+
+            chosen = window.Chosen;
+        }
+
+        // Read again, and planned again from it: the window was open a while.
+        Repo repo = RepoStore.Get(listed.Id) ?? listed;
+
+        if (!repo.KeepPrevious || _downloads.ContainsKey(repo.Id))
+        {
+            return;
+        }
+
+        BulkPlan plan = BulkDownload.Plan(chosen, repo.Current, RepoStore.PreviousVersions(repo.Id), repo.KeepVersions);
+
+        if (plan.Download.Count == 0)
+        {
+            return;
+        }
+
+        SetProgress(repo.Id, new DownloadProgress(0, 0));
+        bool finished = false;
+
+        try
+        {
+            var progress = new Progress<DownloadProgress>(value =>
+            {
+                if (!finished)
+                {
+                    SetProgress(repo.Id, value);
+                }
+            });
+
+            BulkOutcome outcome = await BulkDownload.DownloadAsync(site, repo, _filters, plan.Download, progress, _closing.Token);
+
+            string text = $"{repo.Name}: " + (outcome.Done.Count == 1 ? "1 version" : $"{outcome.Done.Count} versions")
+                        + $" downloaded ({(outcome.Files == 1 ? "1 file" : $"{outcome.Files} files")}).";
+
+            if (plan.Skipped.Count > 0)
+            {
+                text += $" Skipped, older than the {repo.KeepVersions} versions kept: "
+                      + string.Join(", ", plan.Skipped.Select(c => c.Release.ToVersion().DisplayTag)) + ".";
+            }
+
+            if (outcome.Warnings.Count > 0)
+            {
+                SetStatus(text + " " + string.Join(" ", outcome.Warnings), Theme.Amber);
+            }
+            else
+            {
+                SetStatus(text, plan.Skipped.Count > 0 ? Theme.Amber : Theme.DimText);
             }
         }
         catch (ApiException error)
@@ -1131,6 +1228,9 @@ internal sealed class MainForm : Form
             delete: () => DeleteRepo(repo),
             openFolder: () => OpenFolder(repo),
             openPage: () => OpenPage(repo),
+            bulkDownload: !repo.KeepPrevious || _downloads.ContainsKey(repo.Id)
+                ? null
+                : () => BulkDownloadRepo(repo),
             redownload: repo.Current is null || _downloads.ContainsKey(repo.Id)
                 ? null
                 : () => DownloadRepo(repo, redownload: true));

@@ -45,6 +45,7 @@ internal static class Tests
         TestOldFolder();
         TestVersionHistory();
         TestDownloadSequence();
+        TestBulkDownload();
         TestDownloadQueue();
         TestFileCheck();
         TestDownloadRoot();
@@ -2084,6 +2085,194 @@ internal static class Tests
         })());
     }
 
+    /// <summary>
+    /// Bulk Download: which picked versions are downloaded (the versions to
+    /// keep count what is on disk too), and where each one goes.
+    /// </summary>
+    private static void TestBulkDownload()
+    {
+        Section("Bulk Download: which versions, in what order");
+
+        static Release R(int n, string tag = "", int day = 0) => new()
+        {
+            Tag = tag.Length > 0 ? tag : $"v{n}",
+            Date = new DateTimeOffset(2026, 2, day > 0 ? day : Math.Max(1, n), 0, 0, 0, TimeSpan.Zero),
+            Kind = VersionKind.Release,
+            Files = [new ReleaseFile("app.zip", 10, $"https://example.com/{n}/app.zip"),
+                     new ReleaseFile("app.tar.gz", 10, $"https://example.com/{n}/app.tar.gz")]
+        };
+
+        // Picked newest first, as the window lists them.
+        static List<BulkChoice> Picked(params int[] versions) => [.. versions.Select(n => R(n)).Select(r => new BulkChoice(r, [r.Files[0]]))];
+        static string Tags(IEnumerable<BulkChoice> list) => string.Join(",", list.Select(c => c.Release.Tag));
+        static PreviousVersion KeptOf(int n) => new(R(n).ToVersion(), [$"x\\app (v{n}).zip"]);
+
+        BulkPlan plan = BulkDownload.Plan(Picked(5, 3, 1), null, [], 0);
+        Check("keep all: every one, oldest first", "v1,v3,v5", Tags(plan.Download));
+        Check("keep all: none skipped", "", Tags(plan.Skipped));
+
+        plan = BulkDownload.Plan(Picked(5, 4, 3, 2, 1), null, [], 3);
+        Check("keeps 3, five picked: the newest 3", "v3,v4,v5", Tags(plan.Download));
+        Check("keeps 3, five picked: the older ones skipped, newest first", "v2,v1", Tags(plan.Skipped));
+
+        plan = BulkDownload.Plan(Picked(8, 7), R(10).ToVersion(), [KeptOf(9)], 3);
+        Check("newer versions on disk fill the count first", "v8", Tags(plan.Download));
+        Check("... so the oldest pick is skipped", "v7", Tags(plan.Skipped));
+
+        plan = BulkDownload.Plan(Picked(4, 3), R(2).ToVersion(), [KeptOf(1)], 3);
+        Check("newer picks than Current: downloaded", "v3,v4", Tags(plan.Download));
+        Check("newer picks than Current: none skipped (the old kept one goes instead)", "", Tags(plan.Skipped));
+
+        plan = BulkDownload.Plan(Picked(5, 4, 3), R(5).ToVersion(), [], 2);
+        Check("a picked version already on disk counts once", "v4,v5", Tags(plan.Download));
+        Check("... the oldest pick left out", "v3", Tags(plan.Skipped));
+
+        plan = BulkDownload.Plan(Picked(3), R(5).ToVersion(), [], 1);
+        Check("keeps 1 and Current is newer: nothing", "", Tags(plan.Download));
+
+        Release undated = new() { Tag = "undated", Kind = VersionKind.Release, Files = [new ReleaseFile("a.zip", 1, "https://example.com/a.zip")] };
+        Release second = R(2);
+        plan = BulkDownload.Plan([new BulkChoice(second, [second.Files[0]]), new BulkChoice(undated, [.. undated.Files])], null, [], 0);
+        Check("an undated version sorts as the oldest", "undated,v2", Tags(plan.Download));
+
+        var nightlyOld = new VersionRef("nightly", new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero), VersionKind.Release);
+        Release nightlyNew = R(9, "nightly", 9);
+        plan = BulkDownload.Plan([new BulkChoice(nightlyNew, [nightlyNew.Files[0]])], nightlyOld, [], 2);
+        Check("a nightly published again under its tag is another build", "nightly", Tags(plan.Download));
+
+        Section("Bulk Download: the same build, files already saved");
+
+        VersionRef dated = R(1).ToVersion();
+        Check("same tag and date", true, BulkDownload.SameBuild(dated, R(1).ToVersion()));
+        Check("same tag, one undated", true, BulkDownload.SameBuild(dated, dated with { Date = null }));
+        Check("same tag, other date", false, BulkDownload.SameBuild(dated, R(1, "v1", 20).ToVersion()));
+        Check("a release and its own source are the same", true, BulkDownload.SameBuild(dated, dated with { Kind = VersionKind.ReleaseSource }));
+        Check("a commit is not a release of the same name", false, BulkDownload.SameBuild(dated, dated with { Kind = VersionKind.Commit }));
+
+        Check("saved under its labeled name", true, BulkDownload.IsSavedAs(@"Apps\Ky\app (v1).zip", "app.zip", "v1"));
+        Check("saved in Old", true, BulkDownload.IsSavedAs(@"Apps\Ky\Old\app (v1).zip", "app.zip", "v1"));
+        Check("a kept copy beside a build of the same tag", true, BulkDownload.IsSavedAs("app (v1, 2).zip", "app.zip", "v1"));
+        Check("Old had one by that name", true, BulkDownload.IsSavedAs("app (v1) (2).zip", "app.zip", "v1"));
+        Check("two extensions", true, BulkDownload.IsSavedAs("app (v1).tar.gz", "app.tar.gz", "v1"));
+        Check("another version", false, BulkDownload.IsSavedAs("app (v2).zip", "app.zip", "v1"));
+        Check("another extension", false, BulkDownload.IsSavedAs("app (v1).tar.gz", "app.zip", "v1"));
+        Check("another file", false, BulkDownload.IsSavedAs("app-win64 (v1).zip", "app.zip", "v1"));
+        Check("a name with regex characters", true, BulkDownload.IsSavedAs("a+b [x] (1.0).zip", "a+b [x].zip", "1.0"));
+
+        Check("kept versions put in date order", "v1,v2,v3",
+            string.Join(",", BulkDownload.ByDate([KeptOf(3), KeptOf(1), KeptOf(2)]).Select(v => v.Version.Tag)));
+
+        Section("Bulk Download: where each version goes");
+
+        Site github = SiteStore.List().First(s => s.Host == "github.com");
+        var repo = new Repo { Name = "Bulk", SiteId = github.Id, Path = "bulk/test", Folder = "Bulk", KeepPrevious = true, KeepVersions = 3 };
+        long id = RepoStore.Save(repo);
+        RepoStore.SetSelected(id, R(2).ToVersion());
+
+        string folder = DownloadPaths.RepoFolder(repo, []);
+        string old = Path.Combine(folder, "Old");
+        PreferenceStore.SetMoveOldVersions(true);
+
+        bool Place(Release release, params string[] names)
+        {
+            Directory.CreateDirectory(folder);
+            string tag = release.ToVersion().DisplayTag;
+            var pending = new List<(string Part, string Final)>();
+
+            foreach (string name in names)
+            {
+                string final = Path.Combine(folder, DownloadPaths.LabeledName(name, tag));
+                pending.Add((Touch(final + ".part", $"{tag} {name}"), final));
+            }
+
+            (List<string> warnings, bool becameCurrent) = BulkDownload.Place(RepoStore.Get(id)!, folder, pending, release.ToVersion());
+            Check($"{tag}: no warnings", "", string.Join(" ", warnings));
+            return becameCurrent;
+        }
+
+        string Main() => string.Join("|", Directory.EnumerateFiles(folder).Select(Path.GetFileName).Order(StringComparer.OrdinalIgnoreCase));
+        string InOld() => Directory.Exists(old)
+            ? string.Join("|", Directory.EnumerateFiles(old).Select(Path.GetFileName).Order(StringComparer.OrdinalIgnoreCase))
+            : "(no Old)";
+        string Kept() => string.Join(",", RepoStore.PreviousVersions(id).Select(v => v.Version.Tag));
+
+        // The request's example: five picked, three kept, nothing downloaded yet.
+        plan = BulkDownload.Plan(Picked(5, 4, 3, 2, 1), null, [], 3);
+        bool[] became = [.. plan.Download.Select(c => Place(c.Release, "app.zip"))];
+        Check("each newer one became Current in turn", "True,True,True", string.Join(",", became));
+        Check("the newest picked in the folder itself", "app (v5).zip", Main());
+        Check("the others in Old", "app (v3).zip|app (v4).zip", InOld());
+        Check("the others kept", "v3,v4", Kept());
+        Check("Current is the newest picked", "v5", RepoStore.Get(id)!.Current?.Tag);
+        Check("the Selected version is untouched", "v2", RepoStore.Get(id)!.Selected?.Tag);
+
+        // Older than Current: kept, in date order; Current and its folder stay.
+        repo = RepoStore.Get(id)!;
+        repo.KeepVersions = 0;
+        RepoStore.Save(repo);
+        Check("an older version does not become Current", false, Place(R(1), "app.zip"));
+        Check("older: into Old", "app (v1).zip|app (v3).zip|app (v4).zip", InOld());
+        Check("older: the folder as it was", "app (v5).zip", Main());
+        Check("older: kept in date order", "v1,v3,v4", Kept());
+        Check("older: Current as it was", "v5", RepoStore.Get(id)!.Current?.Tag);
+
+        // More files of versions already on disk.
+        Place(R(5), "app.tar.gz");
+        Check("another file of Current: beside it", "app (v5).tar.gz|app (v5).zip", Main());
+        Check("another file of Current: recorded", 2, RepoStore.Get(id)!.CurrentFiles.Count);
+        Place(R(3), "app.tar.gz");
+        Check("another file of a kept version: beside its others", true, File.Exists(Path.Combine(old, "app (v3).tar.gz")));
+        Check("another file of a kept version: recorded", 2, RepoStore.PreviousVersions(id).First(v => v.Version.Tag == "v3").Files.Count);
+        Check("the kept list as it was", "v1,v3,v4", Kept());
+
+        // Without Old: an older version stays beside Current.
+        PreferenceStore.SetMoveOldVersions(false);
+        Place(R(2), "app.zip");
+        Check("without Old: beside Current", "app (v2).zip|app (v5).tar.gz|app (v5).zip", Main());
+        Check("without Old: kept in date order", "v1,v2,v3,v4", Kept());
+
+        // A number to keep: an older version placed past it pushes the oldest out.
+        repo = RepoStore.Get(id)!;
+        repo.KeepVersions = 4;
+        RepoStore.Save(repo);
+        Release between = new()
+        {
+            Tag = "v4b",
+            Date = new DateTimeOffset(2026, 2, 4, 12, 0, 0, TimeSpan.Zero),
+            Kind = VersionKind.Release,
+            Files = [new ReleaseFile("app.zip", 10, "https://example.com/4b/app.zip")]
+        };
+        Place(between, "app.zip");
+        Check("past the number: the oldest kept deleted (in Old)", false, File.Exists(Path.Combine(old, "app (v1).zip")));
+        Check("past the number: the next oldest too (beside Current)", false, File.Exists(Path.Combine(folder, "app (v2).zip")));
+        Check("past the number: 3 kept beside Current, in date order", "v3,v4,v4b", Kept());
+
+        // A build older than Current under the same tag never lands on Current's file.
+        var nightly = new Repo { Name = "Nightly", SiteId = github.Id, Path = "bulk/nightly", Folder = "Nightly", KeepPrevious = true };
+        long nightlyId = RepoStore.Save(nightly);
+        string nightlyFolder = DownloadPaths.RepoFolder(nightly, []);
+        string currentFile = Touch(Path.Combine(nightlyFolder, "app (nightly).zip"), "newer build");
+        RepoStore.SetCurrent(nightlyId, R(9, "nightly", 9).ToVersion(), [DownloadPaths.ToRelative(currentFile)]);
+        string part = Touch(currentFile + ".part", "older build");
+        (List<string> nightlyWarnings, bool nightlyBecame) = BulkDownload.Place(
+            RepoStore.Get(nightlyId)!, nightlyFolder, [(part, currentFile)], R(1, "nightly", 1).ToVersion());
+        Check("older build of the tag: not Current", false, nightlyBecame);
+        Check("older build of the tag: Current's file untouched", "newer build", File.ReadAllText(currentFile));
+        Check("older build of the tag: saved under a free name", "older build",
+            File.ReadAllText(Path.Combine(nightlyFolder, "app (nightly) (2).zip")));
+        Check("older build of the tag: no warnings", 0, nightlyWarnings.Count);
+
+        Check("the page of a list", "https://api.github.com/repos/o/r/releases?per_page=100&page=3",
+            ApiUrls.Releases(github, "o/r", 100, 3));
+        Check("the first page has no number", "https://api.github.com/repos/o/r/releases?per_page=100",
+            ApiUrls.Releases(github, "o/r", 100, 1));
+
+        RepoStore.Delete(id);
+        RepoStore.Delete(nightlyId);
+        PreferenceStore.SetMoveOldVersions(false);
+    }
+
+
     private static void TestSearch()
     {
         Section("Search");
@@ -3623,7 +3812,7 @@ internal static class Tests
                 Check("saved tar.gz is still gzip", "1F8B", Convert.ToHexString(gzip));
                 Check("Current is the commit", VersionKind.Commit, RepoStore.Get(hello.Id)?.Current?.Kind);
 
-                // "Redownload…" with only the zip ticked: the tar.gz goes, and
+                // "Redownload" with only the zip ticked: the tar.gz goes, and
                 // nothing is renamed "(tag, 2)" even with "Keep previous versions" on.
                 Repo keeping = RepoStore.Get(hello.Id)!;
                 keeping.KeepPrevious = true;

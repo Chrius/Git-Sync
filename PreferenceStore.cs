@@ -12,7 +12,7 @@ internal static class PreferenceStore
 
     private const string ShowSourceKey = "ShowSourceCode";
 
-    /// <summary>"Show source code when downloading" (Automation tab). Off until it is ticked.</summary>
+    /// <summary>"Show source code when downloading" (Files tab). Off until it is ticked.</summary>
     internal static bool ShowSource() => Get(ShowSourceKey) == "1";
 
     internal static void SetShowSource(bool show) => Set(ShowSourceKey, show ? "1" : "0");

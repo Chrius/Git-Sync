@@ -4,8 +4,8 @@ using System.Windows.Forms;
 namespace GitSync;
 
 /// <summary>
-/// Right-click menu of a row: the four actions, then "Redownload…" and a
-/// "Versions" submenu with every version on the site.
+/// Right-click menu of a row: the four actions, then "Bulk Download",
+/// "Redownload" and a "Versions" submenu with every version on the site.
 ///
 /// The versions used to fill this menu itself as they arrived, and a long
 /// list made the menu grow and jump — under the mouse of someone about to
@@ -31,8 +31,10 @@ internal sealed class VersionMenu : ContextMenuStrip
     /// </summary>
     internal event Action<Release?>? LatestFound;
 
+    /// <param name="bulkDownload">Null greys the item out: the repo does not keep previous versions, or a download of it is running.</param>
     /// <param name="redownload">Null greys the item out: nothing downloaded yet, or a download of this repo is running.</param>
-    internal VersionMenu(Repo repo, Site site, Action edit, Action delete, Action openFolder, Action openPage, Action? redownload)
+    internal VersionMenu(
+        Repo repo, Site site, Action edit, Action delete, Action openFolder, Action openPage, Action? bulkDownload, Action? redownload)
     {
         _repo = repo;
         _site = site;
@@ -49,9 +51,16 @@ internal sealed class VersionMenu : ContextMenuStrip
         Items.Add(new ToolStripMenuItem("Open Releases Page", null, (_, _) => openPage()));
         Items.Add(new ToolStripSeparator());
 
+        // Files of many versions at once, kept side by side: only for a repo
+        // that keeps previous versions, where more than one can stay on disk.
+        Items.Add(new ToolStripMenuItem("Bulk Download", null, (_, _) => bulkDownload?.Invoke())
+        {
+            Enabled = bulkDownload is not null
+        });
+
         // Picks the files of the Current version again: a wrong file chosen
         // the first time is otherwise stuck until the next release.
-        Items.Add(new ToolStripMenuItem("Redownload…", null, (_, _) => redownload?.Invoke())
+        Items.Add(new ToolStripMenuItem("Redownload", null, (_, _) => redownload?.Invoke())
         {
             Enabled = redownload is not null
         });

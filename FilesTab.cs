@@ -4,19 +4,24 @@ using System.Windows.Forms;
 namespace GitSync;
 
 /// <summary>
-/// "Files" tab: names of release files to hide when choosing what to
-/// download (see <see cref="FileFilters"/>). One box, one pattern per line:
-/// quick to type several, and to paste a list into. Saved as it is typed,
-/// like the other tabs; the next download or Update All window uses it.
+/// "Files" tab: which files of a release are offered when choosing what to
+/// download. Names to hide (see <see cref="FileFilters"/>), in one box with
+/// one pattern per line — quick to type several, and to paste a list into —
+/// and whether the source archives are listed too. Saved as it changes, like
+/// the other tabs; the next download or Update All window uses it.
 /// </summary>
 internal sealed class FilesTab : UserControl
 {
     private const int BoxTop = 28;
-    private const int BoxHeight = 220;
+    private const int BoxHeight = 200;
+    private const int Indent = 20;
 
     private readonly Panel _frame;
     private readonly TextBox _patterns;
     private readonly Label _hint;
+    private readonly Panel _separator;
+    private readonly CheckBox _showSource;
+    private readonly Label _sourceHint;
 
     internal FilesTab()
     {
@@ -63,14 +68,52 @@ internal sealed class FilesTab : UserControl
         };
         Controls.Add(_hint);
 
+        // Moved here from the Automation tab: like the ignored files, it
+        // decides what the download windows list.
+        _separator = new Panel { BackColor = Theme.Separator, Height = 1 };
+        Controls.Add(_separator);
+
+        _showSource = new CheckBox
+        {
+            Text = "Show source code when downloading",
+            AutoSize = true,
+            TabIndex = 1,
+            Checked = PreferenceStore.ShowSource()
+        };
+        _showSource.CheckedChanged += (_, _) => PreferenceStore.SetShowSource(_showSource.Checked);
+        Controls.Add(_showSource);
+
+        _sourceHint = new Label
+        {
+            AutoSize = false,
+            ForeColor = Theme.DimText,
+            Text = "Lists the Source code (zip) and Source code (tar.gz) of a release with its "
+                 + "other files, so they can be downloaded too. When off, only a release with no "
+                 + "files of its own offers its source, as a zip."
+        };
+        Controls.Add(_sourceHint);
+
         ResumeLayout(performLayout: true);
     }
 
+    /// <summary>
+    /// Top to bottom, with each text's height measured at the tab's width
+    /// (as in the Automation tab), so a wrapped line never runs into what follows it.
+    /// </summary>
     protected override void OnLayout(LayoutEventArgs e)
     {
         base.OnLayout(e);
 
-        _frame.SetBounds(0, BoxTop, ClientSize.Width, BoxHeight);
-        _hint.SetBounds(0, _frame.Bottom + 10, ClientSize.Width, 96);
+        int width = ClientSize.Width;
+
+        _frame.SetBounds(0, BoxTop, width, BoxHeight);
+        _hint.SetBounds(0, _frame.Bottom + 10, width, TextHeight(_hint, width));
+        _separator.SetBounds(0, _hint.Bottom + 14, width, 1);
+        _showSource.Location = new Point(0, _separator.Bottom + 16);
+        _sourceHint.SetBounds(Indent, _showSource.Bottom + 6, width - Indent, TextHeight(_sourceHint, width - Indent));
     }
+
+    private static int TextHeight(Label label, int width) =>
+        TextRenderer.MeasureText(label.Text, label.Font, new Size(Math.Max(1, width), int.MaxValue),
+            TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height + 4;
 }

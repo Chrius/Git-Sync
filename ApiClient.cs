@@ -38,12 +38,13 @@ internal static class ApiUrls
         ? $"{ApiRoot(site)}/projects/{Uri.EscapeDataString(path)}"
         : $"{ApiRoot(site)}/repos/{EscapeSegments(path)}";
 
-    internal static string Releases(Site site, string path, int count) => site.Type switch
+    /// <param name="page">1 for the newest; the next pages only for Bulk Download.</param>
+    internal static string Releases(Site site, string path, int count, int page = 1) => site.Type switch
     {
         ApiType.GitLab => $"{RepoRoot(site, path)}/releases?per_page={count}",
         ApiType.Gitea => $"{RepoRoot(site, path)}/releases?limit={count}",
         _ => $"{RepoRoot(site, path)}/releases?per_page={count}"
-    };
+    } + (page > 1 ? $"&page={page}" : string.Empty);
 
     /// <summary>
     /// GitHub and Gitea take a tag with slashes as plain path segments;
@@ -325,9 +326,9 @@ internal static class ApiClient
         }
     }
 
-    internal static async Task<List<Release>> ListReleasesAsync(Site site, Repo repo, int count, CancellationToken cancel = default)
+    internal static async Task<List<Release>> ListReleasesAsync(Site site, Repo repo, int count, CancellationToken cancel = default, int page = 1)
     {
-        string json = await GetJsonAsync(site, ApiUrls.Releases(site, repo.Path, count), cancel) ?? "[]";
+        string json = await GetJsonAsync(site, ApiUrls.Releases(site, repo.Path, count, page), cancel) ?? "[]";
         return Parse(() => ReleaseParser.ParseList(site.Type, json, repo.Path,
             ApiUrls.ProjectPage(site, repo.Path), ApiUrls.UploadsRoot(site, repo.Path)));
     }
@@ -386,6 +387,58 @@ internal static class ApiClient
     {
         List<Release> releases = [.. ReleaseParser.NewestFirst(
             (await ListReleasesAsync(site, repo, MenuCount, cancel)).Where(r => !r.Draft))];
+
+        if (releases.Count > 0)
+        {
+            return releases;
+        }
+
+        Release? head = await GetSourceHeadAsync(site, repo, cancel);
+        return head is null ? [] : [head];
+    }
+
+    /// <summary>Pages read at most by <see cref="ListAllVersionsAsync"/>: up to 1,000 releases.</summary>
+    internal const int MostPages = 10;
+
+    /// <summary>
+    /// Every version for Bulk Download, newest first: page after page, where
+    /// the right-click menu reads only the first. GitHub and GitLab give the
+    /// 100 asked for, so a shorter page is the last. Gitea and Forgejo servers
+    /// cap the page at their own size (50 on Codeberg) whatever is asked, so
+    /// there the last page is one shorter than the first, or empty. A server
+    /// that ignores the page number sends the first again: nothing new, so it stops.
+    /// </summary>
+    internal static async Task<List<Release>> ListAllVersionsAsync(Site site, Repo repo, CancellationToken cancel = default)
+    {
+        var releases = new List<Release>();
+        var tags = new HashSet<string>(StringComparer.Ordinal);
+        int firstPage = 0;
+
+        for (int page = 1; page <= MostPages; page++)
+        {
+            List<Release> batch = await ListReleasesAsync(site, repo, MenuCount, cancel, page);
+            int added = 0;
+
+            foreach (Release release in batch.Where(r => tags.Add(r.Tag)))
+            {
+                releases.Add(release);
+                added++;
+            }
+
+            if (page == 1)
+            {
+                firstPage = batch.Count;
+            }
+
+            bool last = site.Type == ApiType.Gitea ? batch.Count < firstPage : batch.Count < MenuCount;
+
+            if (batch.Count == 0 || added == 0 || last)
+            {
+                break;
+            }
+        }
+
+        releases = [.. ReleaseParser.NewestFirst(releases.Where(r => !r.Draft))];
 
         if (releases.Count > 0)
         {

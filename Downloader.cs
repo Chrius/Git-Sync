@@ -150,7 +150,7 @@ internal static class Downloader
     /// What cannot be deleted (open in another program) stays listed, as the
     /// oldest version, so the next update tries again. Returns the new list.
     /// </summary>
-    private static List<PreviousVersion> DeleteVersions(
+    internal static List<PreviousVersion> DeleteVersions(
         List<PreviousVersion> delete, List<PreviousVersion> keep, IReadOnlyList<string> current, List<string> warnings, string ownFolder)
     {
         var owned = new HashSet<string>(
@@ -227,7 +227,7 @@ internal static class Downloader
     /// skipped quietly. Anything else that goes wrong is only a warning — the
     /// files themselves are already saved by now.
     /// </summary>
-    private static async Task<string?> SaveReadmeAsync(
+    internal static async Task<string?> SaveReadmeAsync(
         Site site, Repo repo, string folder, string reference, CancellationToken cancel)
     {
         string path = Path.Combine(folder, "README.md");
@@ -355,7 +355,7 @@ internal static class Downloader
         DownloadPaths.IsInsideDownloads(full)
         || (ownFolder is not null && DownloadRoot.IsInside(Path.GetFullPath(full), DownloadPaths.FullFolder(ownFolder)));
 
-    private static async Task FetchAsync(
+    internal static async Task FetchAsync(
         Site site, ReleaseFile file, string partPath, Action<double?, long> report, CancellationToken cancel)
     {
         // With a token, GitHub's API address of the asset also works for
@@ -474,7 +474,7 @@ internal static class Downloader
             ? $"{file.Name}: this server does not offer source code downloads (404)."
             : $"{file.Name}: {ApiClient.Describe(site, response)}";
 
-    private static void TryDelete(string path)
+    internal static void TryDelete(string path)
     {
         try
         {

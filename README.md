@@ -18,13 +18,14 @@ folders of your own, and downloads the releases you pick.
   turns into **Stop**. Repositories that publish
   no files are marked **SOURCE** and get their source archive instead; a repository that
   could not be checked shows a red ✕ with the reason.
-- **Download and Update.** A release with one file downloads straight away; with several,
-  you pick which ones, and the next update pre-selects the same files. **Update All** walks
-  through every repository with a newer version, one at a time.
-- **Redownload.** Right-click → *Redownload…* lists the files of the version you have again,
+- **Download and Update.** You see a release's files before anything is downloaded and pick
+  which ones; the next update pre-selects the same files. **Update All** walks through every
+  repository with a newer version, one at a time.
+- **Redownload.** Right-click → *Redownload* lists the files of the version you have again,
   so a wrong pick can be fixed: tick the right file, untick the wrong one and it is deleted.
-- **Source code too.** Settings → Automation → *Show source code when downloading* lists each
-  release's Source code (zip) and (tar.gz) with its other files.
+- **Choose what is listed.** Settings → Files hides files by name, one pattern per line
+  (`*.tar.gz`, `*-linux-*`); *Show All Files* brings them back for that time. *Show source
+  code when downloading* lists each release's Source code (zip) and (tar.gz) with its other files.
 - **Automatic checks.** Settings → Automation can check every repository on its own, every
   30 minutes to 12 hours.
 - **Export and import.** Settings → Data saves your repositories and their folders to a JSON
@@ -40,6 +41,11 @@ folders of your own, and downloads the releases you pick.
   Settings → Automation → *Move previous versions to a different folder* puts them in an `Old`
   folder, so the repository's folder holds only the newest version. Only files Git-Sync
   downloaded itself are ever deleted.
+- **Bulk Download.** For a repository that keeps previous versions, right-click → *Bulk
+  Download* lists all its releases, newest first, each with its files: tick files from as many
+  versions as you like and they are downloaded in one go. The newest goes in the repository's
+  folder, the others with the previous versions (in `Old`, with that setting), and past the
+  number of versions to keep, the oldest picks are skipped. The pinned version stays as it was.
 - **Pin a version.** Right-click → *Versions* lists every release on the site; pick an older
   one to stay on it.
 - **Add by link.** Drag a repository link from the browser onto the window, or press

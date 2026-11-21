@@ -24,9 +24,8 @@ internal sealed class SettingsForm : Form
     {
         Text = "Settings";
         ShowIcon = false;
-        // Sized for the Automation tab, the fullest one, with automatic checking
-        // on (its "Every" row shown): the last checkbox keeps as much room
-        // below it as the first one has above it.
+        // Sized for the Automation tab with automatic checking on, back when
+        // it also held "Show source code": now in Files, which fits too.
         ClientSize = new Size(600, 536);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
